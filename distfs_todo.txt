@@ -1,0 +1,589 @@
+================================================================================
+  DistFS — 2-Week Implementation TODO
+  Distributed File Storage System (C++ / gRPC / Custom Raft)
+================================================================================
+
+WEEK 1 — Bottom-Up Infrastructure
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 1 — Repo, build system & LAN verification                         [infra]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Initialize git repo with directory skeleton
+    distfs/ with common/, raft/, metadata_server/, storage_daemon/,
+    client/, proto/, tests/ subdirs
+
+[ ] Write root CMakeLists.txt
+    Three targets: metadata_server, storage_daemon, distfs-cli.
+    Link stubs for gRPC and protobuf. Confirm it compiles empty main.cpp.
+
+[ ] Install all dependencies on both laptops
+    Run install_deps.sh on both machines:
+      sudo apt install -y g++ cmake ninja-build libgrpc++-dev grpc-proto \
+        protobuf-compiler libprotobuf-dev libssl-dev libfuse3-dev fuse3 \
+        tmux wireshark tcpdump gdb clang-format clang-tidy libgtest-dev fio \
+        net-tools nmap
+
+[ ] Verify LAN connectivity
+    - Assign static IPs: Laptop A = 192.168.1.10, Laptop B = 192.168.1.11
+    - Open ports in ufw on both: 5000, 5001, 5002, 6001, 6002
+    - Confirm: nc -zv 192.168.1.11 5001  (from Laptop A)
+    - Confirm: nc -zv 192.168.1.10 6001  (from Laptop B)
+
+[ ] Write cluster.conf and config parser (common/config.hpp)
+    Parse: raft.nodes, storage.daemons, storage.chunk_size_bytes,
+           storage.replication_factor, client.metadata_nodes
+    Format: INI-style key=value
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 2 — Proto schema & gRPC scaffolding                               [grpc]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Write proto/distfs.proto (complete schema)
+    Services:
+      - MetadataService: InitiateUpload, CommitUpload, GetFileMetadata,
+                         ListFiles, DeleteFile, RegisterHeartbeat, GetClusterStatus
+      - StorageService:  UploadChunk, DownloadChunk, DeleteChunk,
+                         ForwardChunk, ReplicateChunk, HasChunk
+      - RaftService:     RequestVote, AppendEntries
+    Messages:
+      - ChunkInfo, NodePlacement, ChunkData, ChunkAck, LogEntry
+      - AppendEntriesRequest/Response, RequestVoteRequest/Response
+      - HeartbeatRequest/Response, FileMetadata, StatusRequest/Response
+
+[ ] Wire protoc into CMake
+    Use find_package(gRPC) and grpc_generate_cpp().
+    Confirm generated .pb.cc and .grpc.pb.cc compile cleanly.
+
+[ ] Write hello-world gRPC ping between two processes
+    Minimal server on port 9999, client sends Ping RPC and prints response.
+    Test over LAN between both laptops before proceeding.
+    This is your first proof that gRPC works on your specific network setup.
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 3 — SHA-256, WAL, and chunk I/O                                  [storage]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement common/sha256.hpp
+    OpenSSL EVP wrapper.
+    - hash_file(path) -> hex string
+    - hash_bytes(ptr, len) -> hex string
+    Unit test with known SHA-256 vectors (e.g. SHA-256 of empty string).
+
+[ ] Implement common/wal.hpp / wal.cpp
+    Append-only binary log.
+    - WALEntry = { length: uint32, data: bytes }
+    - append(bytes): write length-prefixed entry, fsync
+    - replay(callback): iterate all entries on startup
+    Test: write 100 entries, crash-simulate (re-open), replay and verify all 100.
+
+[ ] Implement storage_daemon/chunk_store.hpp / chunk_store.cpp
+    - write_chunk(hash, data): mkdir /var/distfs/chunks/<2-char-prefix>/,
+      write <hash>.bin, fsync
+    - read_chunk(hash) -> bytes
+    - has_chunk(hash) -> bool (stat check)
+    - delete_chunk(hash): unlink
+
+[ ] Unit test chunk_store
+    Write 4MB of random bytes, read back, re-hash and verify match.
+    Delete and confirm has_chunk returns false.
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 4 — Storage daemon gRPC service                                   [storage]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement storage_daemon/storage_service.hpp / storage_service.cpp
+    gRPC StorageService implementation:
+    - UploadChunk: receive streaming ChunkData, call chunk_store.write_chunk,
+      return ChunkAck
+    - DownloadChunk: chunk_store.read_chunk, stream back as ChunkData frames
+    - HasChunk: chunk_store.has_chunk, return ChunkAck{success}
+    - DeleteChunk: chunk_store.delete_chunk, return ChunkAck
+
+[ ] Implement storage_daemon/main.cpp
+    - Parse config (port, data-dir, metadata nodes)
+    - Start gRPC server, register StorageService
+    - Graceful shutdown on SIGINT
+
+[ ] Manual test: upload and download a 20MB file to one daemon
+    Use grpc_cli or write a one-off C++ test client.
+    Verify bytes match on download. Inspect /var/distfs/chunks/ on disk.
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 5 — Chain replication: ForwardChunk & ReplicateChunk              [storage]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement ForwardChunk RPC on storage daemon
+    When UploadChunk is called with a secondary node specified:
+      1. Write chunk to local disk
+      2. Open gRPC stream to secondary, call ForwardChunk (stream ChunkData)
+      3. Wait for secondary ACK
+      4. Only then send ACK back to original caller
+    If secondary is unreachable: return ChunkAck{success=false, error_message}
+
+[ ] Implement ReplicateChunk RPC
+    Called by Metadata Server during failure recovery:
+      - Input: chunk_hash, target_node address
+      - Read chunk from local chunk_store
+      - Open gRPC stream to target_node, send via ForwardChunk
+      - Return ChunkAck when done
+
+[ ] Test chain replication end-to-end
+    - Run two storage daemons (ports 6001, 6002)
+    - Upload chunk to primary (6001) with secondary=6002
+    - Confirm /var/distfs/chunks/ on port 6002 contains same file
+    - Kill primary. Read from secondary. Bytes must match.
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 6 — Raft: persistent state & log                                    [raft]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement raft/raft_log.hpp / raft_log.cpp
+    Persistent log backed by WAL:
+    - LogEntry = { term: int64, command: bytes }
+    - append(entry) -> index
+    - get(index) -> LogEntry
+    - truncate(from_index): delete log[from_index..] from WAL
+    - last_index() -> int64
+    - last_term() -> int64
+    Re-hydrates all entries from WAL on startup.
+
+[ ] Implement Raft node state struct (raft/raft_node.hpp)
+    Persistent (must survive crash — store in WAL):
+      current_term: int64
+      voted_for: string (node ID or "")
+    Volatile:
+      state: enum { FOLLOWER, CANDIDATE, LEADER }
+      commit_index: int64
+      last_applied: int64
+    Volatile leader-only:
+      next_index[peer]: int64
+      match_index[peer]: int64
+
+[ ] Implement RaftService gRPC server stub
+    Register RequestVote and AppendEntries handlers.
+    Bodies return default false responses for now — filled Day 7.
+
+[ ] Unit test raft_log
+    Append 100 entries, create new RaftLog instance from same WAL path,
+    replay and confirm all 100 entries match in term and command bytes.
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 7 — Raft: leader election                                           [raft]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement election timer thread
+    - Background std::thread sleeping random 150-300ms (uniform distribution)
+    - Resets on: valid AppendEntries received, or vote granted
+    - On expiry:
+        current_term += 1
+        voted_for = self
+        state = CANDIDATE
+        Persist current_term and voted_for
+        votes_received = 1
+        Broadcast RequestVote to all peers concurrently
+
+[ ] Implement RequestVote RPC handler
+    Inputs: term, candidate_id, last_log_index, last_log_term
+    Logic:
+      - If req.term < current_term: reject
+      - If req.term > current_term: update term, revert to FOLLOWER
+      - log_ok = (req.last_log_term > last_log_term) OR
+                 (req.last_log_term == last_log_term AND
+                  req.last_log_index >= last_log_index)
+      - Grant if: (voted_for == "" OR voted_for == candidate_id) AND log_ok
+      - If granting: persist voted_for, reset election timer
+
+[ ] Implement vote response collector
+    - Count granted votes across all RequestVote responses
+    - On majority (>= ceil((cluster_size+1)/2)):
+        state = LEADER
+        next_index[p] = last_log_index + 1 for all peers
+        match_index[p] = 0 for all peers
+        Start heartbeat sender thread
+
+[ ] Implement heartbeat sender thread (leader only)
+    - Every 50ms: send empty AppendEntries (entries=[]) to all peers
+    - On response with higher term: step down to FOLLOWER, stop heartbeats
+
+[ ] Election smoke test
+    - Run 3 metadata_server processes locally (ports 5000, 5001, 5002)
+    - Watch logs: exactly one must print "became leader term 1"
+    - Kill leader process
+    - One remaining must print "became leader term 2" within 600ms
+
+
+────────────────────────────────────────────────────────────────────────────────
+
+WEEK 2 — Integration, Top-Down
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 8 — Raft: log replication                                           [raft]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement AppendEntries handler — follower side
+    Inputs: term, leader_id, prev_log_index, prev_log_term, entries[], leader_commit
+    Logic:
+      - If req.term < current_term: reject
+      - If req.term >= current_term: update term, revert to FOLLOWER, reset timer
+      - If log[prev_log_index].term != prev_log_term: reject (consistency check)
+      - For each entry: if conflict (same index, different term) truncate from there
+      - Append any new entries not already in log, persist via raft_log
+      - If leader_commit > commit_index:
+            commit_index = min(leader_commit, last_log_index)
+            Apply log[last_applied+1..commit_index] to state machine
+
+[ ] Implement AppendEntries sender — leader side
+    For each peer p:
+      - Build entries = log[next_index[p]..last_log_index]
+      - Send AppendEntries(term, self, prev_log_index, prev_log_term, entries, commit_index)
+      - On success:
+          match_index[p] = next_index[p] - 1 + len(entries)
+          next_index[p] = match_index[p] + 1
+          Recompute commit_index: find N > commit_index where
+            log[N].term == current_term AND majority have match_index >= N
+      - On failure: next_index[p] -= 1, retry immediately
+
+[ ] Implement ClientRequest on leader
+    - Append (current_term, command) to local raft_log
+    - Trigger AppendEntries to all peers
+    - Block (condition_variable) until commit_index >= this entry's index
+    - Apply command to state machine
+    - Return result to caller
+
+[ ] Log replication correctness test
+    - 3-node Raft cluster
+    - Submit 50 metadata commands
+    - Kill one follower at entry 30
+    - Submit 20 more commands
+    - Restart killed follower
+    - Confirm all 70 entries on all 3 nodes in identical order
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 9 — Metadata server: state machine & RPCs                          [grpc]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement metadata_server/metadata_store.hpp / metadata_store.cpp
+    Data structures (in-memory, rebuilt from Raft log on restart):
+      file_map:      unordered_map<string, FileMetadata>
+      chunk_map:     unordered_map<string, vector<NodeID>>
+      node_registry: unordered_map<NodeID, NodeInfo>
+                     NodeInfo = { address, last_heartbeat, used_bytes, total_bytes,
+                                  chunk_count, status (ALIVE/DEAD) }
+    All mutations serialized through Raft as protobuf-encoded commands.
+
+[ ] Implement InitiateUpload RPC
+    - Validate filename does not already exist in file_map
+    - For each chunk: select primary = least-used ALIVE node,
+      secondary = second-least-used ALIVE node != primary
+    - Return NodePlacement list (chunk_hash -> primary_node, secondary_node)
+    - Does NOT write to Raft yet
+
+[ ] Implement CommitUpload RPC
+    - Serialize FileMetadata (filename, chunks, revision) to bytes
+    - Submit as Raft ClientRequest command
+    - On commit: insert into file_map, update chunk_map entries
+    - Return CommitUploadResponse{success=true, revision_id=raft_log_index}
+
+[ ] Implement GetFileMetadata RPC
+    - Lookup file_map[filename]
+    - For each chunk_hash: lookup chunk_map[hash] for node list
+    - Return FileMetadata with chunk list and per-chunk node assignments
+
+[ ] Implement ListFiles RPC
+    - Iterate file_map keys
+    - Return list of {filename, chunk_count, total_size, revision_id}
+
+[ ] Implement DeleteFile RPC
+    - Submit Raft command: remove filename from file_map
+    - Chunks remain in chunk_map as orphans (GC handled separately)
+    - Return DeleteFileResponse{success=true}
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 10 — Heartbeats & failure detection                         [storage/infra]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement heartbeat client in storage daemon
+    (storage_daemon/heartbeat_client.cpp)
+    - Background std::thread, fires every 3 seconds
+    - Sends HeartbeatRequest{node_id, address, used_bytes, total_bytes, chunk_count}
+      to current known leader
+    - On response with leader_hint != "": switch target to leader_hint
+    - On connection failure: try next metadata node from config
+
+[ ] Implement RegisterHeartbeat RPC on metadata server
+    - Only processes if state == LEADER (return leader_hint otherwise)
+    - Update node_registry[node_id].last_heartbeat = now()
+    - Update used_bytes, total_bytes, chunk_count
+    - If node was previously DEAD: mark ALIVE, log recovery
+
+[ ] Implement HeartbeatMonitor thread (runs on leader only)
+    - Wakes every 3 seconds
+    - For each node in node_registry:
+        if now() - last_heartbeat > 9 seconds AND status != DEAD:
+          status = DEAD
+          Commit status change to Raft log
+          Call TriggerReReplication(dead_node_id)
+
+[ ] Implement TriggerReReplication(dead_node_id)
+    For each chunk_hash where dead_node_id in chunk_map[chunk_hash]:
+      - surviving = chunk_map[chunk_hash] - {dead_node_id}
+      - if surviving is empty: log CRITICAL — data loss, skip
+      - candidates = ALIVE nodes NOT already in chunk_map[chunk_hash]
+      - target = least-used candidate
+      - Send ReplicateChunk(chunk_hash, target.address) RPC to surviving[0]
+      - On success: update chunk_map[chunk_hash], commit to Raft log
+
+[ ] Failure detection test
+    - Run 2 storage daemons
+    - Kill daemon-A abruptly (kill -9)
+    - Wait 10 seconds
+    - Confirm metadata server logs: "daemon-A marked DEAD"
+    - Confirm TriggerReReplication log entries appear
+    - Verify all chunks accessible from daemon-B
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 11 — CLI client: chunking & upload/download                         [cli]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement client/chunker.hpp / chunker.cpp
+    - split_file(path, chunk_size=4194304):
+        Read file in 4MB windows, compute SHA-256 of each window
+        Return vector<ChunkInfo>{chunk_hash, size_bytes, chunk_index}
+    - reassemble_file(chunk_files: vector<path>, out_path):
+        Concatenate chunk temp files in order, write to out_path
+        Compute SHA-256 of final file and return for verification
+
+[ ] Implement client/uploader.cpp
+    upload_file(filename, local_path, metadata_stub):
+      1. Chunk file -> vector<ChunkInfo>
+      2. Call InitiateUpload -> NodePlacement list
+      3. For each chunk:
+           Open gRPC stream to primary node
+           Send ChunkData frames (up to 1MB each to stay within gRPC limits)
+           Wait for ChunkAck{success=true}
+           Print progress: "Chunk N/M -> node X [OK]"
+      4. Call CommitUpload -> revision_id
+      5. Print "Upload complete. N chunks, 2 replicas. Revision: R"
+
+[ ] Implement client/downloader.cpp
+    download_file(filename, out_path, metadata_stub):
+      1. Call GetFileMetadata -> FileMetadata with chunk list + node assignments
+      2. For each chunk (in chunk_index order):
+           Try primary node: DownloadChunk RPC, stream ChunkData to temp file
+           On error (UNAVAILABLE): try secondary node
+           On both failed: abort with error
+      3. Reassemble temp files via chunker.reassemble_file
+      4. Compute SHA-256 of assembled file, compare to
+         XOR of all chunk hashes (or store full-file hash at commit time)
+      5. Print "Download complete -> out_path"
+
+[ ] Implement client/main.cpp with subcommand dispatch
+    Subcommands: upload, download, list, delete, status
+    - Parse with getopt_long or manual argv parsing
+    - Read metadata_nodes from cluster.conf
+    - On RPC returning FAILED_PRECONDITION with leader_hint:
+        Retry up to 3 times against leader_hint address
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 12 — CLI: remaining commands & GetClusterStatus                     [cli]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Implement list command
+    - Call ListFiles RPC
+    - Print formatted table:
+        NAME             CHUNKS    SIZE      REVISION
+        report.pdf       3         12.3 MB   42
+        lecture.mp4      128       512.0 MB  87
+    - Handle empty namespace with "No files stored."
+
+[ ] Implement delete command
+    - Call DeleteFile RPC
+    - Print "Deleted: <filename> (chunks orphaned, GC pending)"
+    - Note: physical chunks are not immediately removed
+
+[ ] Implement status command
+    - Call GetClusterStatus RPC
+    - Print:
+        === DistFS Cluster Status ===
+        Metadata Cluster:
+          Leader:   node-0 @ 192.168.1.10:5000  [HEALTHY]
+          Follower: node-1 @ 192.168.1.11:5001  [HEALTHY]
+          Term: 14    Log Index: 203
+        Storage Daemons:
+          daemon-A @ 192.168.1.10:6001  [ALIVE]  2.1 GB / 50 GB
+          daemon-B @ 192.168.1.11:6002  [ALIVE]  2.1 GB / 50 GB
+        Replication Health:
+          Total chunks: 612   Under-replicated: 0   Orphaned: 0
+
+[ ] Implement GetClusterStatus RPC on metadata server
+    Aggregate from memory (no Raft round-trip needed — reads are fine from leader):
+      - Raft state: current leader, term, log index, peer statuses
+      - node_registry snapshot: all daemon statuses + capacity
+      - chunk_map stats: total chunks, count with < RF replicas, orphan count
+    Return StatusResponse protobuf
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 13 — Full integration & LAN demo setup                             [demo]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Write launch_laptop_a.sh
+    tmux script:
+      Pane 0: metadata_server --id=node-0 --port=5000
+                --peers=node-1@192.168.1.11:5001,node-2@192.168.1.10:5002
+                --wal=/var/distfs/wal0
+      Pane 1: metadata_server --id=node-2 --port=5002
+                --peers=node-0@192.168.1.10:5000,node-1@192.168.1.11:5001
+                --wal=/var/distfs/wal2
+      Pane 2: storage_daemon --id=daemon-A --port=6001
+                --data-dir=/var/distfs/chunks
+                --metadata=192.168.1.10:5000,192.168.1.11:5001,192.168.1.10:5002
+      Pane 3: CLI ready prompt
+
+[ ] Write launch_laptop_b.sh
+    tmux script:
+      Pane 0: metadata_server --id=node-1 --port=5001
+                --peers=node-0@192.168.1.10:5000,node-2@192.168.1.10:5002
+                --wal=/var/distfs/wal1
+      Pane 1: storage_daemon --id=daemon-B --port=6002
+                --data-dir=/var/distfs/chunks
+                --metadata=192.168.1.10:5000,192.168.1.11:5001,192.168.1.10:5002
+      Pane 2: CLI ready prompt
+
+[ ] End-to-end integration test: upload -> download -> verify
+    - Upload a 50MB binary file from Laptop A
+    - Download it on Laptop B to /tmp/
+    - diff original and downloaded: must be byte-identical
+    - Repeat with 1MB, 50MB, 200MB files
+
+[ ] Concurrent upload stress test
+    - Open 4 tmux panes on both laptops
+    - Each pane runs: distfs-cli upload --file <unique_file>
+    - Start all 4 simultaneously
+    - Confirm all 4 succeed with no metadata corruption
+    - Run distfs-cli list and verify all 4 filenames appear
+
+[ ] Raft leader failover demo
+    - Run: distfs-cli status  -> note current leader
+    - Kill leader process (Ctrl+C in its pane)
+    - Immediately run: distfs-cli upload --file test.bin
+    - Upload must succeed within ~500ms election window
+    - Run: distfs-cli status -> confirm new leader elected
+    - Run: distfs-cli download --name test.bin -> verify bytes correct
+
+[ ] Storage daemon failure demo
+    - Upload 5 files (note which chunks on which daemon via status)
+    - Kill daemon-A (kill -9)
+    - Run: distfs-cli download on all 5 files -> all must succeed (from daemon-B)
+    - Wait 10 seconds
+    - Run: distfs-cli status -> confirm TriggerReReplication ran,
+      under-replicated count = 0 (if 3rd daemon available) or shows correctly
+
+
+────────────────────────────────────────────────────────────────────────────────
+DAY 14 — Hardening, edge cases & documentation                  [infra/demo]
+────────────────────────────────────────────────────────────────────────────────
+
+[ ] Handle split-brain: clients contacting Raft follower
+    - All metadata RPCs on follower must return:
+        grpc::Status(grpc::StatusCode::FAILED_PRECONDITION, leader_hint)
+    - CLI auto-retries on leader_hint, max 3 attempts before error exit
+
+[ ] Handle storage daemon unreachable during upload
+    - If primary daemon connection fails at upload time:
+        CLI selects alternate node from NodePlacement list
+        Log: "Primary node X unreachable, retrying on node Y"
+    - If both primary and secondary unreachable: abort with clear error
+
+[ ] Implement basic chunk GC scan (metadata server)
+    - Periodic scan (every 60s or on-demand via CLI): find hashes in chunk_map
+      not referenced by any file in file_map
+    - Log: "Orphaned chunks: N hashes"
+    - (Physical deletion from storage daemons is optional for demo scope)
+
+[ ] Write README.md with demo instructions
+    Sections:
+      1. Prerequisites (both laptops)
+      2. Network setup (static IPs, ufw rules)
+      3. Build instructions (cmake -B build && cmake --build build)
+      4. Launch instructions (run launch_laptop_a.sh, launch_laptop_b.sh)
+      5. Demo scenario 1: basic upload/download/list
+      6. Demo scenario 2: concurrent uploads
+      7. Demo scenario 3: leader failover (kill metadata leader)
+      8. Demo scenario 4: storage daemon failure (kill daemon-A)
+      9. Demo scenario 5: FUSE mount (if implemented)
+
+[ ] Final rehearsal: full demo from cold start
+    - Reboot both laptops
+    - Run launch scripts from scratch
+    - Execute all 5 demo scenarios in sequence
+    - Time each scenario:
+        Upload 50MB       -> target < 5 seconds on LAN
+        Download 50MB     -> target < 5 seconds on LAN
+        Leader failover   -> target < 500ms (within election timeout)
+        Daemon failure    -> target: reads still work immediately,
+                             re-replication completes within 15s
+    - Fix any timing or connection issues found during rehearsal
+
+
+================================================================================
+  CRITICAL PATH
+================================================================================
+
+  The following tasks block everything downstream. Do not skip or defer:
+
+  Day 3: raft_log + WAL   ->  Day 6: Raft state
+  Day 7: Leader election  ->  Day 8: Log replication
+  Day 8: Log replication  ->  Day 9: Metadata state machine
+  Day 9: Metadata RPCs    ->  Day 11: CLI upload/download
+  Day 5: ForwardChunk     ->  Day 10: Failure detection
+
+  Everything else (heartbeats, status command, GC scan, FUSE)
+  can slip by a few hours without blocking the demo.
+
+
+================================================================================
+  TAG LEGEND
+================================================================================
+
+  [raft]    Custom Raft consensus implementation
+  [grpc]    gRPC service definitions and RPC handlers
+  [storage] Storage daemon, chunk I/O, chain replication
+  [cli]     CLI client: chunking, upload, download, commands
+  [infra]   Build system, config, network, deployment scripts
+  [test]    Tests and verification steps
+  [demo]    Demo scenarios and rehearsal
+
+
+================================================================================
+  RECOMMENDED NODE LAYOUT FOR 3-NODE RAFT (LAN DEMO)
+================================================================================
+
+  Laptop A (192.168.1.10):
+    - metadata_server node-0 :5000   <- initial leader
+    - metadata_server node-2 :5002   <- second node on Laptop A
+    - storage_daemon  daemon-A :6001
+
+  Laptop B (192.168.1.11):
+    - metadata_server node-1 :5001   <- follower
+    - storage_daemon  daemon-B :6002
+
+  Quorum = 2 of 3. Laptop B can go fully offline and
+  Laptop A continues serving (both its metadata nodes are alive).
+  Laptop A losing power brings down 2 of 3 nodes -> cluster pauses writes.
+  This is the correct and expected CP behavior.
+
+================================================================================

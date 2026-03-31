@@ -1,0 +1,214 @@
+syntax = "proto3";
+package distfs;
+
+// ============================================================
+// Metadata Server Service
+// ============================================================
+service MetadataService {
+  rpc InitiateUpload    (InitiateUploadRequest)    returns (InitiateUploadResponse);
+  rpc CommitUpload      (CommitUploadRequest)       returns (CommitUploadResponse);
+  rpc GetFileMetadata   (GetFileMetadataRequest)    returns (GetFileMetadataResponse);
+  rpc ListFiles         (ListFilesRequest)          returns (ListFilesResponse);
+  rpc DeleteFile        (DeleteFileRequest)         returns (DeleteFileResponse);
+  rpc RegisterHeartbeat (HeartbeatRequest)          returns (HeartbeatResponse);
+  rpc GetClusterStatus  (StatusRequest)             returns (StatusResponse);
+}
+
+// ============================================================
+// Storage Daemon Service
+// ============================================================
+service StorageService {
+  rpc UploadChunk    (stream ChunkData)    returns (ChunkAck);
+  rpc DownloadChunk  (ChunkRequest)        returns (stream ChunkData);
+  rpc DeleteChunk    (ChunkRequest)        returns (ChunkAck);
+  rpc ForwardChunk   (stream ChunkData)    returns (ChunkAck);
+  rpc ReplicateChunk (ReplicateRequest)    returns (ChunkAck);
+  rpc HasChunk       (ChunkRequest)        returns (ChunkAck);
+}
+
+// ============================================================
+// Raft Consensus Service
+// ============================================================
+service RaftService {
+  rpc RequestVote   (RequestVoteRequest)   returns (RequestVoteResponse);
+  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse);
+}
+
+// ============================================================
+// Chunk / Storage Messages
+// ============================================================
+message ChunkInfo {
+  string chunk_hash  = 1;
+  int64  size_bytes  = 2;
+  int32  chunk_index = 3;
+}
+
+message NodePlacement {
+  string chunk_hash     = 1;
+  string primary_node   = 2;  // node id, e.g. "daemon-A"
+  string primary_addr   = 3;  // "ip:port"
+  string secondary_node = 4;
+  string secondary_addr = 5;
+}
+
+message ChunkData {
+  string chunk_hash = 1;
+  bytes  data       = 2;
+  int64  offset     = 3;
+}
+
+message ChunkRequest {
+  string chunk_hash    = 1;
+  string secondary_addr = 2;  // for ForwardChunk target (optional)
+}
+
+message ChunkAck {
+  bool   success       = 1;
+  string error_message = 2;
+}
+
+message ReplicateRequest {
+  string chunk_hash   = 1;
+  string target_addr  = 2;  // destination daemon address
+}
+
+// ============================================================
+// Metadata Service Messages
+// ============================================================
+message InitiateUploadRequest {
+  string filename             = 1;
+  repeated ChunkInfo chunks   = 2;
+}
+
+message InitiateUploadResponse {
+  repeated NodePlacement placements = 1;
+  string upload_token               = 2;
+}
+
+message CommitUploadRequest {
+  string filename           = 1;
+  string upload_token       = 2;
+  repeated ChunkInfo chunks = 3;
+}
+
+message CommitUploadResponse {
+  bool   success     = 1;
+  int64  revision_id = 2;
+  string error       = 3;
+}
+
+message GetFileMetadataRequest {
+  string filename = 1;
+}
+
+message FileMetadata {
+  string filename              = 1;
+  int64  revision_id           = 2;
+  int64  total_size_bytes      = 3;
+  repeated ChunkInfo chunks    = 4;
+  repeated NodePlacement placements = 5;
+}
+
+message GetFileMetadataResponse {
+  bool         found    = 1;
+  FileMetadata metadata = 2;
+}
+
+message ListFilesRequest {}
+
+message FileEntry {
+  string filename     = 1;
+  int32  chunk_count  = 2;
+  int64  total_bytes  = 3;
+  int64  revision_id  = 4;
+}
+
+message ListFilesResponse {
+  repeated FileEntry files = 1;
+}
+
+message DeleteFileRequest {
+  string filename = 1;
+}
+
+message DeleteFileResponse {
+  bool   success = 1;
+  string error   = 2;
+}
+
+// ============================================================
+// Heartbeat Messages
+// ============================================================
+message HeartbeatRequest {
+  string node_id     = 1;
+  string address     = 2;
+  int64  used_bytes  = 3;
+  int64  total_bytes = 4;
+  int64  chunk_count = 5;
+}
+
+message HeartbeatResponse {
+  bool   ok          = 1;
+  string leader_hint = 2;  // redirect address if not leader
+}
+
+// ============================================================
+// Cluster Status Messages
+// ============================================================
+message StatusRequest {}
+
+message NodeStatus {
+  string node_id     = 1;
+  string address     = 2;
+  bool   is_leader   = 3;
+  bool   is_alive    = 4;
+  int64  used_bytes  = 5;
+  int64  total_bytes = 6;
+  int64  chunk_count = 7;
+}
+
+message StatusResponse {
+  string leader_id           = 1;
+  string leader_addr         = 2;
+  int64  current_term        = 3;
+  int64  log_index           = 4;
+  repeated NodeStatus raft_nodes    = 5;
+  repeated NodeStatus storage_nodes = 6;
+  int64  total_chunks        = 7;
+  int64  under_replicated    = 8;
+  int64  orphaned_chunks     = 9;
+}
+
+// ============================================================
+// Raft Messages
+// ============================================================
+message LogEntry {
+  int64 term    = 1;
+  bytes command = 2;  // serialized metadata mutation (protobuf bytes)
+}
+
+message RequestVoteRequest {
+  int64  term           = 1;
+  string candidate_id   = 2;
+  int64  last_log_index = 3;
+  int64  last_log_term  = 4;
+}
+
+message RequestVoteResponse {
+  int64 term         = 1;
+  bool  vote_granted = 2;
+}
+
+message AppendEntriesRequest {
+  int64            term           = 1;
+  string           leader_id      = 2;
+  int64            prev_log_index = 3;
+  int64            prev_log_term  = 4;
+  repeated LogEntry entries       = 5;  // empty = heartbeat
+  int64            leader_commit  = 6;
+}
+
+message AppendEntriesResponse {
+  int64 term    = 1;
+  bool  success = 2;
+}

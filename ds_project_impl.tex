@@ -1,0 +1,1169 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=1in, headheight=15pt]{geometry}
+\usepackage{titlesec}
+\usepackage{titling}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{xcolor}
+\usepackage{mdframed}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds, calc}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable, skins}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{parskip}
+
+% ---- Color Palette ----
+\definecolor{primary}{RGB}{30, 58, 138}
+\definecolor{accent}{RGB}{59, 130, 246}
+\definecolor{success}{RGB}{22, 163, 74}
+\definecolor{warning}{RGB}{217, 119, 6}
+\definecolor{danger}{RGB}{185, 28, 28}
+\definecolor{lightgray}{RGB}{248, 250, 252}
+\definecolor{codebg}{RGB}{30, 30, 46}
+\definecolor{codetext}{RGB}{205, 214, 244}
+\definecolor{tierone}{RGB}{220, 252, 231}
+\definecolor{tiertwo}{RGB}{254, 243, 199}
+\definecolor{tierthree}{RGB}{219, 234, 254}
+
+% ---- Header / Footer ----
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\textcolor{primary}{\small\textbf{DistFS}}}
+\fancyhead[R]{\textcolor{gray}{\small Distributed Storage System — SWE Design Document}}
+\fancyfoot[C]{\textcolor{gray}{\small\thepage}}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ---- Section Formatting ----
+\titleformat{\section}{\Large\bfseries\color{primary}}{}{0em}{\thesection\quad}[\titlerule]
+\titleformat{\subsection}{\large\bfseries\color{accent}}{}{0em}{\thesubsection\quad}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{primary}}{}{0em}{\thesubsubsection\quad}
+
+% ---- Code Listings ----
+\lstset{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small\color{codetext},
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{accent},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{accent}\bfseries,
+  commentstyle=\color{gray}\itshape,
+  stringstyle=\color{success},
+}
+
+% ---- Custom Boxes ----
+\newtcolorbox{guaranteebox}[1]{
+  colback=blue!5, colframe=primary, fonttitle=\bfseries,
+  title=#1, breakable, arc=4pt
+}
+\newtcolorbox{warningbox}[1]{
+  colback=yellow!10, colframe=warning, fonttitle=\bfseries,
+  title=#1, breakable, arc=4pt
+}
+\newtcolorbox{protocolbox}[1]{
+  colback=green!5, colframe=success, fonttitle=\bfseries,
+  title=#1, breakable, arc=4pt
+}
+\newtcolorbox{toolbox}[1]{
+  colback=gray!5, colframe=gray!50, fonttitle=\bfseries,
+  title=#1, breakable, arc=4pt
+}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primary,
+  urlcolor=accent,
+  citecolor=success
+}
+
+% =====================================================================
+\begin{document}
+% =====================================================================
+
+% ---- Title Page ----
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\color{primary}\rule{\linewidth}{1.5pt}}\\[0.4cm]
+  {\Huge\bfseries\color{primary} DistFS}\\[0.3cm]
+  {\Large\color{accent} A Distributed File Storage System}\\[0.2cm]
+  {\large\color{gray} SWE Design \& Implementation Document}\\[0.1cm]
+  {\color{primary}\rule{\linewidth}{1.5pt}}\\[1.5cm]
+
+  \begin{tabular}{ll}
+    \textbf{Architecture:}   & Metadata-Separated, Content-Addressable Storage \\[4pt]
+    \textbf{Consensus:}      & Custom Raft Implementation (C++) \\[4pt]
+    \textbf{Replication:}    & Synchronous chain replication, RF=2 \\[4pt]
+    \textbf{Transport:}      & gRPC + Protocol Buffers \\[4pt]
+    \textbf{Language:}       & C++17 \\[4pt]
+    \textbf{Target OS:}      & Ubuntu/Debian Linux \\[4pt]
+    \textbf{Demo Setup:}     & 2 Laptops on LAN / Single machine via tmux \\
+  \end{tabular}
+
+  \vfill
+  {\color{gray}\small Last Revised: 2026}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Project Overview \& SWE Analysis}
+% =====================================================================
+
+\subsection{What We Are Building}
+
+DistFS is a distributed file storage service inspired by Ceph and Dropbox's Magic Pocket architecture. It is implemented entirely in C++ and designed to run across two Linux laptops connected over a Local Area Network (LAN), with the ability to also simulate the entire cluster on a single machine using process isolation via \texttt{tmux}.
+
+The system separates two fundamental concerns of any distributed storage service:
+
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{The Control Plane (Metadata):} Who owns what, where chunks live, file-to-chunk mappings. Managed by a cluster of Metadata Servers running the Raft consensus protocol.
+  \item \textbf{The Data Plane (Chunks):} The actual binary data. Managed by Storage Daemons that store 4\,MB binary chunks as flat files on the local \texttt{ext4} filesystem using Content-Addressable Storage.
+\end{itemize}
+
+\subsection{Architectural Components}
+
+The system consists of three distinct process types:
+
+\begin{center}
+\begin{tabular}{>{\bfseries}p{3.2cm} p{4.5cm} p{5.5cm}}
+\toprule
+Component & Role & Key Responsibility \\
+\midrule
+\textbf{CLI Client} & User-facing process & Chunk files, hash them, issue RPCs to Metadata Server, coordinate uploads/downloads \\
+\addlinespace
+\textbf{Metadata Server} & Control plane & Stores file$\to$chunk mappings; runs Raft for fault tolerance; manages heartbeat tracking \\
+\addlinespace
+\textbf{Storage Daemon} & Data plane & Stores and serves 4\,MB binary chunks; performs synchronous chain replication; sends heartbeats \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{SWE Developer's First-Pass Analysis}
+
+From the perspective of the developer who will build this, the critical observations are:
+
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Complexity is deliberately concentrated.} The hard part is the custom Raft implementation for the Metadata Server cluster. Everything else (chunk storage, CLI, gRPC stubs) is comparatively mechanical.
+  \item \textbf{The gRPC layer is the integration glue.} All three components communicate only via protobuf-defined RPC contracts. This means components can be developed and tested independently.
+  \item \textbf{The WAL is the durability backbone.} The in-memory \texttt{std::unordered\_map} on the Metadata Server is the fast path; the append-only Write-Ahead Log is what survives crashes.
+  \item \textbf{Content-Addressability eliminates cache invalidation.} Because every chunk's filename is its SHA-256 hash, identical data is never stored twice, and stale reads are impossible.
+  \item \textbf{The LAN demo constraint shapes everything.} Ports, IP discovery, and network configuration must be planned from day one. This document covers that explicitly.
+\end{enumerate}
+
+% =====================================================================
+\section{User-Facing Features: What the User Sees}
+% =====================================================================
+
+\subsection{The CLI Client Interface}
+
+The user interacts with DistFS entirely through a command-line interface binary, \texttt{distfs-cli}. There is no web frontend. This is an intentional design choice — the CLI allows scripting, concurrency testing via \texttt{tmux}, and a FUSE stretch goal.
+
+\subsubsection{Core Commands (Tier 1 — Must-Haves)}
+
+\begin{lstlisting}[language=bash, caption={distfs-cli core commands}]
+# Upload a file to the distributed store
+$ distfs-cli upload --file /path/to/video.mp4 --name "lecture.mp4"
+
+# Download a file from the store to local disk
+$ distfs-cli download --name "lecture.mp4" --out /tmp/lecture.mp4
+
+# List all files stored in the system
+$ distfs-cli list
+
+# Delete a file (removes metadata; chunks GC'd later)
+$ distfs-cli delete --name "lecture.mp4"
+
+# Show system status: live nodes, leader, replication health
+$ distfs-cli status
+\end{lstlisting}
+
+\subsubsection{What Happens During an Upload (User's Mental Model)}
+
+When the user runs \texttt{distfs-cli upload}, they see a progress-style output:
+
+\begin{lstlisting}[language=bash, caption={Upload session output}]
+$ distfs-cli upload --file report.pdf --name "report.pdf"
+
+[1/4] Chunking file: report.pdf (12.3 MB)
+      -> Chunk 0: sha256=3a7f... (4 MB)
+      -> Chunk 1: sha256=c91b... (4 MB)
+      -> Chunk 2: sha256=8e02... (4.3 MB)
+
+[2/4] Contacting Metadata Server (leader: 192.168.1.10:5000)
+      -> Received chunk placement plan
+
+[3/4] Uploading chunks to Storage Daemons...
+      -> Chunk 0 -> node A (replicated to node B) [OK]
+      -> Chunk 1 -> node A (replicated to node B) [OK]
+      -> Chunk 2 -> node B (replicated to node A) [OK]
+
+[4/4] Committing metadata...
+      -> File registered. Revision: 1
+
+Upload complete. 3 chunks, 2 replicas each. Duration: 1.2s
+\end{lstlisting}
+
+\subsubsection{What Happens During a Download}
+
+\begin{lstlisting}[language=bash, caption={Download session output}]
+$ distfs-cli download --name "report.pdf" --out /tmp/report.pdf
+
+[1/3] Fetching chunk map from Metadata Server...
+      -> 3 chunks, preferred nodes: A, A, B
+
+[2/3] Fetching chunks...
+      -> Chunk 0 from node A [OK]
+      -> Chunk 1 from node A [OK]
+      -> Chunk 2 from node B [OK]
+
+[3/3] Reassembling file...
+      -> SHA-256 verification: PASS
+
+Download complete -> /tmp/report.pdf
+\end{lstlisting}
+
+\subsubsection{Status Command Output}
+
+\begin{lstlisting}[language=bash, caption={System status output}]
+$ distfs-cli status
+
+=== DistFS Cluster Status ===
+Metadata Cluster:
+  Leader:   node-0 @ 192.168.1.10:5000  [HEALTHY]
+  Follower: node-1 @ 192.168.1.11:5001  [HEALTHY]
+  Term:     14
+  Log Index: 203
+
+Storage Daemons:
+  daemon-A @ 192.168.1.10:6001  [ALIVE]  used: 2.1 GB / 50 GB
+  daemon-B @ 192.168.1.11:6002  [ALIVE]  used: 2.1 GB / 50 GB
+
+Replication Health:
+  Total chunks:       612
+  Under-replicated:   0
+  Orphaned chunks:    0
+\end{lstlisting}
+
+\subsection{FUSE Stretch Goal: Mount as a Filesystem}
+
+If the FUSE wrapper is implemented, the user can mount the distributed store and use standard Linux utilities:
+
+\begin{lstlisting}[language=bash, caption={FUSE mount usage}]
+$ distfs-fuse /mnt/distfs --metadata=192.168.1.10:5000
+
+$ ls /mnt/distfs
+report.pdf   lecture.mp4   notes.txt
+
+$ cp ~/new_paper.pdf /mnt/distfs/
+$ rm /mnt/distfs/notes.txt
+$ cat /mnt/distfs/report.pdf | wc -l
+\end{lstlisting}
+
+This is a stretch goal — it uses the \texttt{libfuse3} library and maps filesystem calls to the same RPC layer.
+
+% =====================================================================
+\section{System Architecture \& Design Choices}
+% =====================================================================
+
+\subsection{Separation of Control and Data Planes}
+
+The central architectural decision is the strict separation between the Metadata Server (control plane) and the Storage Daemons (data plane). This mirrors the design of GFS, HDFS, and Ceph:
+
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Metadata Server} never touches actual file bytes. It only stores: filename $\to$ [chunk-hash list], chunk-hash $\to$ [node-list].
+  \item \textbf{Storage Daemons} never know the filename of the data they hold. They only know chunk hashes.
+  \item \textbf{The Client} is the orchestrator: it asks the Metadata Server where to write, then talks directly to Storage Daemons for the bulk data transfer.
+\end{itemize}
+
+This separation means metadata operations (which are small, frequent, and need strong consistency) can use Raft, while data operations (which are large but tolerant of brief unavailability) can use simpler protocols.
+
+\subsection{Content-Addressable Storage (CAS)}
+
+Every 4\,MB chunk is named by its SHA-256 hash. The Storage Daemon stores the chunk at path:
+
+\begin{lstlisting}[language=bash]
+/var/distfs/chunks/<first-2-hex-chars>/<full-sha256-hash>.bin
+# Example:
+/var/distfs/chunks/3a/3a7fbc91d204a8e7f3b1c9a0d5e62f1847abc923def456789012345678901234.bin
+\end{lstlisting}
+
+The two-character directory prefix (fanout directory) prevents \texttt{ext4} directory entry limits from being hit when millions of chunks exist.
+
+\textbf{Properties of CAS:}
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Deduplication:} If two files share identical 4\,MB blocks, only one copy is stored.
+  \item \textbf{Integrity:} On every read, re-hash the chunk and compare to the expected hash. Bit-rot is detected automatically.
+  \item \textbf{Cache coherency:} Chunks are immutable. There is no cache invalidation problem. A hash always refers to the same bytes, forever.
+  \item \textbf{Idempotent writes:} Re-uploading the same file is a no-op at the data layer — all chunks already exist.
+\end{itemize}
+
+\subsection{In-Memory Metadata with WAL Persistence}
+
+The Metadata Server stores its state in an \texttt{std::unordered\_map} in RAM for fast lookup. Durability is provided by an append-only Write-Ahead Log on disk. Every metadata mutation (file create, file delete, chunk placement) is first written to the WAL, then applied to the in-memory map.
+
+On restart, the server replays the WAL to reconstruct state. This is the same pattern used by Redis (AOF mode) and LevelDB.
+
+\begin{center}
+\begin{tabular}{>{\bfseries}p{4cm} p{8cm}}
+\toprule
+Structure & Description \\
+\midrule
+\texttt{file\_map} & \texttt{unordered\_map<string, FileMetadata>} — maps filename to chunk list and revision ID \\
+\addlinespace
+\texttt{chunk\_map} & \texttt{unordered\_map<string, vector<NodeID>>} — maps chunk hash to list of nodes holding it \\
+\addlinespace
+\texttt{node\_registry} & \texttt{unordered\_map<NodeID, NodeInfo>} — live nodes, last heartbeat timestamp, capacity \\
+\addlinespace
+WAL file & Append-only binary log of all mutations, fsynced before acknowledgment \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{System Guarantees}
+% =====================================================================
+
+\subsection{Consistency Guarantees}
+
+\begin{guaranteebox}{G1 — Strong Metadata Consistency}
+All metadata mutations (file uploads, deletes, renames) are serialized through the Raft leader. No two clients can observe different file namespaces simultaneously. The system provides linearizable reads and writes on the metadata plane.
+\end{guaranteebox}
+
+\begin{guaranteebox}{G2 — Strong Read-After-Write Consistency for Data}
+A client that successfully uploads a chunk is guaranteed to be able to read that chunk immediately afterward. This is achieved via \textbf{synchronous chain replication}: the primary Storage Daemon forwards the chunk to the secondary and waits for the secondary's acknowledgment before responding to the client. The client's success response is proof of dual-node durability.
+\end{guaranteebox}
+
+\begin{guaranteebox}{G3 — File Integrity via SHA-256 Verification}
+Every chunk is verified on write (the client computes the hash before sending) and on read (the daemon re-hashes the chunk on disk before serving it). Any corruption — bit-rot, disk error, network corruption — is detected at read time. The client will automatically retry from the replica.
+\end{guaranteebox}
+
+\begin{guaranteebox}{G4 — Metadata Durability (WAL)}
+No metadata mutation is acknowledged to the client before it has been (a) appended to the Raft log on a quorum of Metadata Servers and (b) fsynced to disk on the leader. A server crash never results in acknowledged metadata being lost.
+\end{guaranteebox}
+
+\subsection{Fault Tolerance Guarantees}
+
+\begin{guaranteebox}{G5 — Storage Daemon Failure: No Data Loss}
+Because every chunk is replicated to at least 2 Storage Daemons, the failure of any single Storage Daemon does not result in data loss. The Metadata Server detects the failure via missed heartbeats, identifies under-replicated chunks, and issues re-replication commands to surviving daemons.
+\end{guaranteebox}
+
+\begin{guaranteebox}{G6 — Metadata Server Failure: Leader Re-election (Raft)}
+The Metadata Server runs as a cluster of nodes (2 in the LAN demo: one per laptop). If the Raft leader crashes, the remaining Raft follower detects the missing heartbeat, increments the term, and runs a new election. The system becomes available again once a new leader is elected. Write operations are unavailable during the election timeout window (bounded by the configured \texttt{election\_timeout}, typically 150--300\,ms).
+\end{guaranteebox}
+
+\begin{guaranteebox}{G7 — Network Partition Behavior (CAP)}
+DistFS is a CP system (Consistency + Partition Tolerance, sacrificing Availability during partitions). During a network partition, the minority partition will refuse writes rather than risk split-brain. The majority partition continues serving requests normally. This is the correct choice for a storage system where stale or conflicting writes are unacceptable.
+\end{guaranteebox}
+
+\subsection{Availability Guarantees}
+
+\begin{guaranteebox}{G8 — Read Availability with One Node Down}
+Downloads (reads) can be served from either replica of a chunk. If the preferred node is unavailable, the client falls back to the secondary node. Reads remain available as long as at least one copy of each chunk is reachable.
+\end{guaranteebox}
+
+\subsection{Summary Table}
+
+\begin{center}
+\begin{tabular}{>{\bfseries}p{4.5cm} p{4cm} p{5cm}}
+\toprule
+Property & Guarantee & Mechanism \\
+\midrule
+Metadata consistency & Linearizable & Raft log serialization \\
+Data read-after-write & Strong & Synchronous chain replication \\
+Data integrity & SHA-256 verification & CAS + re-hash on read \\
+Metadata durability & WAL + Raft quorum & fsync before ack \\
+Data fault tolerance & RF=2, 1 failure tolerated & Heartbeat + re-replication \\
+Metadata fault tolerance & 1 leader failure tolerated & Raft leader election \\
+Partition behavior & CP (refuse writes in minority) & Raft quorum requirement \\
+Read availability & Available if $\geq$1 replica alive & Client-side fallback \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{Replication Design}
+% =====================================================================
+
+\subsection{Chunk Replication: Chain Replication}
+
+Data replication uses a \textbf{synchronous chain} pattern. For a replication factor of 2 (RF=2):
+
+\begin{enumerate}[leftmargin=2em]
+  \item The Metadata Server designates a \textbf{primary} and a \textbf{secondary} Storage Daemon for each chunk.
+  \item The client sends the chunk to the primary only.
+  \item The primary writes the chunk to its local disk.
+  \item The primary forwards the chunk to the secondary via gRPC (\texttt{ForwardChunk} RPC).
+  \item The secondary writes the chunk to its local disk and sends an \texttt{ACK} back to the primary.
+  \item Only after receiving the secondary's ACK does the primary send \texttt{ACK} to the client.
+  \item The client reports success to the Metadata Server, which commits the chunk placement to the Raft log.
+\end{enumerate}
+
+\begin{warningbox}{Why Synchronous Replication?}
+Asynchronous replication would allow the primary to fail between steps 3 and 4, resulting in a chunk with only one physical copy despite the client receiving a success acknowledgment. Synchronous chain replication makes the guarantee: \emph{if you got an ACK, two nodes have your data}.
+\end{warningbox}
+
+\subsection{Re-Replication on Node Failure}
+
+When a Storage Daemon fails:
+
+\begin{enumerate}[leftmargin=2em]
+  \item The Metadata Server detects the node has not sent a heartbeat for more than \texttt{3 $\times$ heartbeat\_interval} (i.e., $> 9$ seconds by default).
+  \item The Metadata Server marks the node as \texttt{DEAD} in the node registry.
+  \item It scans \texttt{chunk\_map} for all chunks that were placed on the dead node.
+  \item For each under-replicated chunk, it selects a healthy target node with sufficient capacity.
+  \item It issues a \texttt{ReplicateChunk(chunk\_hash, target\_node)} RPC to the surviving node holding that chunk.
+  \item The surviving node reads the chunk from its local disk and sends it to the target node via \texttt{ForwardChunk} RPC.
+  \item Once complete, the Metadata Server updates \texttt{chunk\_map} and commits to Raft log.
+\end{enumerate}
+
+% =====================================================================
+\section{Custom Raft Consensus Protocol}
+% =====================================================================
+
+\subsection{Why Raft?}
+
+Raft is a consensus protocol designed specifically to be understandable. It decomposes the consensus problem into three semi-independent subproblems:
+
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Leader Election:} At any given time, exactly one server is the leader.
+  \item \textbf{Log Replication:} The leader accepts log entries from clients and replicates them to followers.
+  \item \textbf{Safety:} No two servers ever apply different commands at the same log index.
+\end{itemize}
+
+Our implementation is written from scratch in C++. We do not use \texttt{braft} or any third-party Raft library.
+
+\subsection{Persistent State (Must Survive Crashes)}
+
+Each Raft node persists the following to disk before responding to any RPC:
+
+\begin{center}
+\begin{tabular}{>{\ttfamily}p{3.5cm} p{8cm}}
+\toprule
+\normalfont\textbf{Field} & \textbf{Description} \\
+\midrule
+current\_term & Latest term the server has seen. Monotonically increasing. \\
+voted\_for & CandidateID that received vote in current term (or null). \\
+log[] & The Raft log: a sequence of (term, command) entries. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Volatile State}
+
+\begin{center}
+\begin{tabular}{>{\ttfamily}p{3.5cm} p{8cm}}
+\toprule
+\normalfont\textbf{Field} & \textbf{Description} \\
+\midrule
+commit\_index & Index of highest log entry known to be committed. \\
+last\_applied & Index of highest log entry applied to state machine. \\
+\normalfont\textbf{(Leader only)} & \\
+next\_index[] & For each follower: next log index to send to that follower. \\
+match\_index[] & For each follower: highest log index known replicated on that follower. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Server States and Transitions}
+
+Each Raft node is always in exactly one of three states:
+
+\vspace{0.5em}
+\begin{center}
+\begin{tikzpicture}[
+  node distance=4cm,
+  state/.style={draw, rounded rectangle, minimum width=2.5cm, minimum height=1cm,
+                fill=blue!10, draw=primary, thick, font=\bfseries},
+  arrow/.style={->, thick, draw=primary}
+]
+  \node[state] (follower) {Follower};
+  \node[state, right=of follower] (candidate) {Candidate};
+  \node[state, right=of candidate] (leader) {Leader};
+
+  \draw[arrow] (follower) -- node[above, font=\small]{election timeout} (candidate);
+  \draw[arrow] (candidate) -- node[above, font=\small]{wins election} (leader);
+  \draw[arrow, bend right=30] (candidate) to node[below, font=\small]{sees higher term} (follower);
+  \draw[arrow, bend left=40] (leader) to node[above, font=\small]{sees higher term} (follower);
+  \draw[arrow, loop left] (candidate) to node[left, font=\small]{split vote / timeout} (candidate);
+\end{tikzpicture}
+\end{center}
+
+\subsection{RPC Definitions}
+
+Our Raft implementation uses exactly two RPCs, defined in protobuf:
+
+\subsubsection{RequestVote RPC}
+
+\begin{lstlisting}[language=c, caption={RequestVote protobuf definition}]
+message RequestVoteRequest {
+  int64 term           = 1;  // candidate's term
+  string candidate_id  = 2;  // candidate requesting vote
+  int64 last_log_index = 3;  // index of candidate's last log entry
+  int64 last_log_term  = 4;  // term of candidate's last log entry
+}
+
+message RequestVoteResponse {
+  int64 term         = 1;  // currentTerm, for candidate to update itself
+  bool  vote_granted = 2;  // true means candidate received vote
+}
+\end{lstlisting}
+
+\subsubsection{AppendEntries RPC}
+
+\begin{lstlisting}[language=c, caption={AppendEntries protobuf definition}]
+message LogEntry {
+  int64  term    = 1;
+  bytes  command = 2;  // serialized metadata mutation
+}
+
+message AppendEntriesRequest {
+  int64           term           = 1;  // leader's term
+  string          leader_id      = 2;  // so followers can redirect clients
+  int64           prev_log_index = 3;
+  int64           prev_log_term  = 4;
+  repeated LogEntry entries      = 5;  // empty for heartbeat
+  int64           leader_commit  = 6;
+}
+
+message AppendEntriesResponse {
+  int64 term    = 1;  // currentTerm, for leader to update itself
+  bool  success = 2;  // true if follower matched prev_log_index/term
+}
+\end{lstlisting}
+
+\subsection{Leader Election Protocol (From Scratch)}
+
+\begin{algorithm}
+\caption{Raft Leader Election}
+\begin{algorithmic}[1]
+\State \textbf{All nodes start as} \textsc{Follower}
+\State Each follower sets \texttt{election\_timeout} $\leftarrow$ \textsc{RandomUniform}(150ms, 300ms)
+
+\Procedure{OnElectionTimeout}{} \Comment{Triggered when no heartbeat received}
+  \State Transition to \textsc{Candidate}
+  \State \texttt{current\_term} $\leftarrow$ \texttt{current\_term} + 1
+  \State \texttt{voted\_for} $\leftarrow$ \texttt{self}
+  \State \texttt{votes\_received} $\leftarrow$ 1 \Comment{Vote for self}
+  \State Persist \texttt{current\_term} and \texttt{voted\_for} to disk
+  \State Reset election timer
+  \For{each peer $p$ in cluster}
+    \State Send \textsc{RequestVote}(\texttt{current\_term}, self, last\_log\_index, last\_log\_term) to $p$
+  \EndFor
+\EndProcedure
+
+\Procedure{OnReceiveRequestVote}{req}
+  \If{req.term $<$ current\_term}
+    \State \Return \textsc{RequestVoteResponse}(current\_term, \textbf{false})
+  \EndIf
+  \If{req.term $>$ current\_term}
+    \State \texttt{current\_term} $\leftarrow$ req.term; \texttt{voted\_for} $\leftarrow$ null
+    \State Transition to \textsc{Follower}; Persist state
+  \EndIf
+  \State \texttt{log\_ok} $\leftarrow$ (req.last\_log\_term $>$ last\_log\_term) \textbf{or}\\
+  \hspace{3.8cm}(req.last\_log\_term $=$ last\_log\_term \textbf{and} req.last\_log\_index $\geq$ last\_log\_index)
+  \If{(\texttt{voted\_for} $=$ null \textbf{or} \texttt{voted\_for} $=$ req.candidate\_id) \textbf{and} \texttt{log\_ok}}
+    \State \texttt{voted\_for} $\leftarrow$ req.candidate\_id; Persist state
+    \State Reset election timer
+    \State \Return \textsc{RequestVoteResponse}(current\_term, \textbf{true})
+  \Else
+    \State \Return \textsc{RequestVoteResponse}(current\_term, \textbf{false})
+  \EndIf
+\EndProcedure
+
+\Procedure{OnReceiveVoteResponse}{resp}
+  \If{resp.term $>$ current\_term}
+    \State \texttt{current\_term} $\leftarrow$ resp.term; Transition to \textsc{Follower}
+  \EndIf
+  \If{state $=$ \textsc{Candidate} \textbf{and} resp.vote\_granted}
+    \State \texttt{votes\_received} $\leftarrow$ \texttt{votes\_received} + 1
+    \If{\texttt{votes\_received} $\geq$ $\lceil$(cluster\_size + 1) / 2$\rceil$}
+      \State Transition to \textsc{Leader}
+      \State Initialize \texttt{next\_index}[p] $\leftarrow$ last\_log\_index + 1 for all peers
+      \State Initialize \texttt{match\_index}[p] $\leftarrow$ 0 for all peers
+      \State Begin sending heartbeats (empty \textsc{AppendEntries}) every \texttt{heartbeat\_interval}
+    \EndIf
+  \EndIf
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Log Replication Protocol (From Scratch)}
+
+\begin{algorithm}
+\caption{Raft Log Replication}
+\begin{algorithmic}[1]
+\Procedure{ClientRequest}{command} \Comment{Called on Leader only}
+  \State Append (current\_term, command) to local log
+  \State Persist log entry to disk (WAL)
+  \For{each peer $p$}
+    \State \textsc{SendAppendEntries}($p$)
+  \EndFor
+  \State \textbf{wait} until entry committed (majority ack)
+  \State Apply command to state machine (\texttt{file\_map}, \texttt{chunk\_map})
+  \State \Return result to client
+\EndProcedure
+
+\Procedure{SendAppendEntries}{peer $p$}
+  \State entries $\leftarrow$ log[next\_index[$p$] .. last\_log\_index]
+  \State prev\_idx $\leftarrow$ next\_index[$p$] - 1
+  \State prev\_term $\leftarrow$ log[prev\_idx].term (or 0 if prev\_idx = 0)
+  \State Send \textsc{AppendEntries}(current\_term, self, prev\_idx, prev\_term, entries, commit\_index) to $p$
+\EndProcedure
+
+\Procedure{OnReceiveAppendEntries}{req}
+  \If{req.term $<$ current\_term}
+    \State \Return \textsc{AppendEntriesResponse}(current\_term, \textbf{false})
+  \EndIf
+  \If{req.term $\geq$ current\_term}
+    \State Transition to \textsc{Follower}; \texttt{current\_term} $\leftarrow$ req.term
+    \State Reset election timer
+  \EndIf
+  \If{log does not contain entry at req.prev\_log\_index with term req.prev\_log\_term}
+    \State \Return \textsc{AppendEntriesResponse}(current\_term, \textbf{false})
+  \EndIf
+  \For{each entry $e$ in req.entries}
+    \If{conflict: log[e.index].term $\neq$ e.term}
+      \State Delete log[e.index..] \Comment{Truncate conflicting tail}
+    \EndIf
+    \If{entry not already in log}
+      \State Append $e$ to log; Persist to disk
+    \EndIf
+  \EndFor
+  \If{req.leader\_commit $>$ commit\_index}
+    \State commit\_index $\leftarrow$ \textsc{min}(req.leader\_commit, last\_log\_index)
+    \State Apply all entries up to commit\_index to state machine
+  \EndIf
+  \State \Return \textsc{AppendEntriesResponse}(current\_term, \textbf{true})
+\EndProcedure
+
+\Procedure{OnReceiveAppendEntriesResponse}{peer $p$, resp}
+  \If{resp.term $>$ current\_term}
+    \State \texttt{current\_term} $\leftarrow$ resp.term; Transition to \textsc{Follower}; \Return
+  \EndIf
+  \If{resp.success}
+    \State match\_index[$p$] $\leftarrow$ next\_index[$p$] - 1 + $|$entries sent$|$
+    \State next\_index[$p$] $\leftarrow$ match\_index[$p$] + 1
+    \State \Comment{Check if new entries can be committed}
+    \For{each index $N >$ commit\_index in descending order}
+      \If{log[$N$].term = current\_term \textbf{and} majority have match\_index $\geq N$}
+        \State commit\_index $\leftarrow N$; Apply to state machine; \textbf{break}
+      \EndIf
+    \EndFor
+  \Else
+    \State next\_index[$p$] $\leftarrow$ next\_index[$p$] - 1 \Comment{Backtrack and retry}
+  \EndIf
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Raft Safety Properties Guaranteed}
+
+\begin{protocolbox}{The Five Raft Safety Invariants (always maintained)}
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Election Safety:} At most one leader is elected per term. Enforced by: each node votes at most once per term (persisted \texttt{voted\_for}).
+  \item \textbf{Leader Append-Only:} A leader never overwrites or deletes entries in its own log; it only appends. Enforced by: client requests are always appends.
+  \item \textbf{Log Matching:} If two logs contain an entry with the same index and term, then the logs are identical in all entries up through that index. Enforced by: \texttt{prev\_log\_index}/\texttt{prev\_log\_term} consistency check in \textsc{AppendEntries}.
+  \item \textbf{Leader Completeness:} If a log entry is committed in a given term, that entry will be present in the logs of all leaders for all higher-numbered terms. Enforced by: a candidate cannot win election unless its log is at least as up-to-date as a majority of cluster members.
+  \item \textbf{State Machine Safety:} If a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for that index. Follows from the above four properties.
+\end{enumerate}
+\end{protocolbox}
+
+\subsection{Timing Parameters}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Parameter & Value & Rationale \\
+\midrule
+\texttt{heartbeat\_interval} & 50\,ms & Leader sends heartbeats every 50\,ms \\
+\texttt{election\_timeout} & 150--300\,ms (random) & Must be $\gg$ heartbeat; randomized to avoid split votes \\
+\texttt{rpc\_timeout} & 100\,ms & Per-RPC deadline \\
+\texttt{heartbeat\_dead\_threshold} & 9\,s (3 $\times$ 3\,s) & Storage Daemon considered dead after 3 missed intervals \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{Heartbeat \& Failure Detection Protocol}
+% =====================================================================
+
+\subsection{Storage Daemon Heartbeat}
+
+Every Storage Daemon sends a heartbeat to the Metadata Server every 3 seconds. The heartbeat is a lightweight TCP message (or UDP datagram) containing:
+
+\begin{lstlisting}[language=c, caption={Heartbeat protobuf}]
+message HeartbeatRequest {
+  string node_id       = 1;  // e.g. "daemon-A"
+  string address       = 2;  // "192.168.1.10:6001"
+  int64  used_bytes    = 3;  // current storage used
+  int64  total_bytes   = 4;  // total capacity
+  int64  chunk_count   = 5;  // number of chunks stored
+}
+
+message HeartbeatResponse {
+  bool   ok            = 1;
+  string leader_hint   = 2;  // redirect if this is not the Raft leader
+}
+\end{lstlisting}
+
+\subsection{Failure Detection Algorithm}
+
+\begin{algorithm}
+\caption{Metadata Server Failure Detector (runs on leader)}
+\begin{algorithmic}[1]
+\Procedure{HeartbeatMonitor}{} \Comment{Runs every 3s on leader}
+  \State now $\leftarrow$ \textsc{CurrentTime}()
+  \For{each node $n$ in node\_registry}
+    \If{now $-$ last\_heartbeat[$n$] $>$ \texttt{dead\_threshold} (9s)}
+      \If{node\_status[$n$] $\neq$ \textsc{Dead}}
+        \State node\_status[$n$] $\leftarrow$ \textsc{Dead}
+        \State \textsc{TriggerReReplication}($n$)
+      \EndIf
+    \EndIf
+  \EndFor
+\EndProcedure
+
+\Procedure{TriggerReReplication}{dead\_node}
+  \For{each chunk $c$ in chunk\_map where dead\_node $\in$ chunk\_map[$c$]}
+    \State surviving\_nodes $\leftarrow$ chunk\_map[$c$] $\setminus$ \{dead\_node\}
+    \State candidate\_targets $\leftarrow$ \textsc{GetHealthyNodes}() $\setminus$ chunk\_map[$c$]
+    \If{$|$surviving\_nodes$| > 0$ \textbf{and} $|$candidate\_targets$| > 0$}
+      \State source $\leftarrow$ surviving\_nodes[0]
+      \State target $\leftarrow$ \textsc{LeastUsed}(candidate\_targets)
+      \State Send \textsc{ReplicateChunk}($c$, target) to source
+      \State Update chunk\_map[$c$] $\leftarrow$ (chunk\_map[$c$] $\setminus$ \{dead\_node\}) $\cup$ \{target\}
+      \State Commit to Raft log
+    \EndIf
+  \EndFor
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+% =====================================================================
+\section{Full Protocol Buffer Schema}
+% =====================================================================
+
+\begin{lstlisting}[language=c, caption={distfs.proto — complete schema}]
+syntax = "proto3";
+package distfs;
+
+// ---- Metadata Server Service ----
+service MetadataService {
+  rpc InitiateUpload   (InitiateUploadRequest)   returns (InitiateUploadResponse);
+  rpc CommitUpload     (CommitUploadRequest)      returns (CommitUploadResponse);
+  rpc GetFileMetadata  (GetFileMetadataRequest)   returns (GetFileMetadataResponse);
+  rpc ListFiles        (ListFilesRequest)         returns (ListFilesResponse);
+  rpc DeleteFile       (DeleteFileRequest)        returns (DeleteFileResponse);
+  rpc RegisterHeartbeat(HeartbeatRequest)         returns (HeartbeatResponse);
+  rpc GetClusterStatus (StatusRequest)            returns (StatusResponse);
+}
+
+// ---- Storage Daemon Service ----
+service StorageService {
+  rpc UploadChunk    (stream ChunkData)    returns (ChunkAck);
+  rpc DownloadChunk  (ChunkRequest)        returns (stream ChunkData);
+  rpc DeleteChunk    (ChunkRequest)        returns (ChunkAck);
+  rpc ForwardChunk   (stream ChunkData)    returns (ChunkAck);
+  rpc ReplicateChunk (ReplicateRequest)    returns (ChunkAck);
+  rpc HasChunk       (ChunkRequest)        returns (ChunkAck);
+}
+
+// ---- Raft Consensus Service ----
+service RaftService {
+  rpc RequestVote    (RequestVoteRequest)    returns (RequestVoteResponse);
+  rpc AppendEntries  (AppendEntriesRequest)  returns (AppendEntriesResponse);
+}
+
+// ---- Messages ----
+message ChunkInfo {
+  string chunk_hash    = 1;
+  int64  size_bytes    = 2;
+  int32  chunk_index   = 3;
+}
+
+message NodePlacement {
+  string chunk_hash    = 1;
+  string primary_node  = 2;
+  string secondary_node = 3;
+}
+
+message InitiateUploadRequest {
+  string filename      = 1;
+  repeated ChunkInfo chunks = 2;
+}
+
+message InitiateUploadResponse {
+  repeated NodePlacement placements = 1;
+  string upload_token  = 2;
+}
+
+message CommitUploadRequest {
+  string filename      = 1;
+  string upload_token  = 2;
+  repeated ChunkInfo chunks = 3;
+}
+
+message CommitUploadResponse {
+  bool   success       = 1;
+  int64  revision_id   = 2;
+}
+
+message ChunkData {
+  string chunk_hash    = 1;
+  bytes  data          = 2;
+  int64  offset        = 3;
+}
+
+message ChunkRequest {
+  string chunk_hash    = 1;
+}
+
+message ChunkAck {
+  bool   success       = 1;
+  string error_message = 2;
+}
+\end{lstlisting}
+
+% =====================================================================
+\section{LAN Deployment: 2 Laptops over a Network}
+% =====================================================================
+
+\subsection{Node Assignment}
+
+\begin{center}
+\begin{tabular}{>{\bfseries}p{3cm} p{3cm} p{4cm} p{3.5cm}}
+\toprule
+Process & Machine & IP:Port & Role \\
+\midrule
+Metadata Server 0 & Laptop A & 192.168.1.10:5000 & Raft node (initial leader) \\
+Metadata Server 1 & Laptop B & 192.168.1.11:5001 & Raft node (follower) \\
+Storage Daemon A  & Laptop A & 192.168.1.10:6001 & Primary store \\
+Storage Daemon B  & Laptop B & 192.168.1.11:6002 & Secondary store \\
+CLI Client        & Either   & —                 & User interface \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Network Configuration}
+
+\begin{lstlisting}[language=bash, caption={LAN setup on Laptop A (Ubuntu)}]
+# Verify you are on the same subnet
+ip addr show          # confirm 192.168.1.x assignment
+ping 192.168.1.11     # verify Laptop B is reachable
+
+# Open required ports in ufw firewall (run on both laptops)
+sudo ufw allow 5000/tcp    # Metadata Server 0
+sudo ufw allow 5001/tcp    # Metadata Server 1
+sudo ufw allow 6001/tcp    # Storage Daemon A
+sudo ufw allow 6002/tcp    # Storage Daemon B
+
+# Verify connectivity across all ports (from Laptop A)
+nc -zv 192.168.1.11 5001
+nc -zv 192.168.1.11 6002
+\end{lstlisting}
+
+\subsection{Cluster Configuration File}
+
+\begin{lstlisting}[language=bash, caption={cluster.conf — shared across both laptops}]
+[raft]
+nodes = node-0@192.168.1.10:5000,node-1@192.168.1.11:5001
+election_timeout_min_ms = 150
+election_timeout_max_ms = 300
+heartbeat_interval_ms = 50
+
+[storage]
+daemons = daemon-A@192.168.1.10:6001,daemon-B@192.168.1.11:6002
+chunk_size_bytes = 4194304    # 4 MB
+replication_factor = 2
+dead_threshold_sec = 9
+
+[client]
+metadata_nodes = 192.168.1.10:5000,192.168.1.11:5001
+\end{lstlisting}
+
+\subsection{tmux Session Layout for Demo}
+
+\begin{lstlisting}[language=bash, caption={Launch script for Laptop A}]
+#!/bin/bash
+# launch_laptop_a.sh
+
+tmux new-session -d -s distfs
+
+# Pane 0: Metadata Server 0 (Raft node)
+tmux send-keys -t distfs:0 \
+  "./build/metadata_server --id=node-0 --port=5000 \
+   --peers=node-1@192.168.1.11:5001 \
+   --wal=/var/distfs/wal0" C-m
+
+# Pane 1: Storage Daemon A
+tmux split-window -h -t distfs:0
+tmux send-keys -t distfs:0.1 \
+  "./build/storage_daemon --id=daemon-A --port=6001 \
+   --data-dir=/var/distfs/chunks \
+   --metadata=192.168.1.10:5000,192.168.1.11:5001" C-m
+
+# Pane 2: CLI
+tmux split-window -v -t distfs:0.0
+tmux send-keys -t distfs:0.2 "# CLI ready. Run: ./distfs-cli upload ..." Enter
+
+tmux attach -t distfs
+\end{lstlisting}
+
+\subsection{Simulating Failures in the Demo}
+
+\begin{lstlisting}[language=bash, caption={Demo fault injection commands}]
+# Kill Storage Daemon A to demonstrate re-replication
+# In tmux, navigate to Storage Daemon pane and press Ctrl+C
+# OR from another terminal:
+pkill -f "storage_daemon --id=daemon-A"
+
+# Watch the Metadata Server log to see re-replication trigger:
+# [WARN] daemon-A missed 3 heartbeats. Marking DEAD.
+# [INFO] Re-replicating 12 chunks from daemon-B to daemon-B... (no target!)
+# In a real cluster, you'd need a 3rd daemon for this.
+
+# Kill the Raft leader (Metadata Server 0) to demonstrate re-election:
+pkill -f "metadata_server --id=node-0"
+# Watch Laptop B's Metadata Server log:
+# [INFO] Election timeout. Starting election for term 2.
+# [INFO] Received vote from node-0... (already dead, won't respond)
+# In a 2-node cluster, this does NOT reach quorum. Use 3 nodes for full demo.
+\end{lstlisting}
+
+\begin{warningbox}{2-Node Raft Limitation for LAN Demo}
+A 2-node Raft cluster cannot tolerate any node failure — it requires both nodes for a majority ($\lceil 2/2 \rceil + 1 = 2$). For the demo, consider running a \textbf{3-node Raft cluster}: run 2 Metadata Servers on Laptop A (ports 5000, 5001) and 1 on Laptop B (port 5002). This gives a quorum of 2 out of 3, allowing Laptop B's metadata server to fail gracefully.
+\end{warningbox}
+
+% =====================================================================
+\section{Complete Tool Inventory}
+% =====================================================================
+
+\subsection{Core Language \& Build}
+
+\begin{toolbox}{C++17 (GCC 11+)}
+\textbf{Why:} The entire system is implemented in C++17. It provides: raw socket APIs (\texttt{POSIX}), direct \texttt{ext4} filesystem access via \texttt{open()}/\texttt{read()}/\texttt{write()} syscalls, low-level memory management for zero-copy chunk transfers, \texttt{std::thread} and \texttt{std::atomic} for concurrent heartbeat timers, and \texttt{std::unordered\_map} for O(1) metadata lookups. C++ is the language of choice for systems software where performance and control matter.
+
+\textbf{Install:} \texttt{sudo apt install g++ cmake}
+\end{toolbox}
+
+\begin{toolbox}{CMake 3.20+}
+\textbf{Why:} Build system. Manages compilation of the three separate binaries (\texttt{metadata\_server}, \texttt{storage\_daemon}, \texttt{distfs-cli}), links against gRPC and OpenSSL, and handles proto file compilation via \texttt{protoc} plugin integration.
+
+\textbf{Install:} \texttt{sudo apt install cmake}
+\end{toolbox}
+
+\subsection{RPC \& Serialization}
+
+\begin{toolbox}{gRPC (C++ library)}
+\textbf{Why:} All inter-node communication uses gRPC. It provides: bidirectional streaming (needed for large chunk transfers), built-in connection management and retry logic, deadline/timeout propagation per-RPC, TLS (optional for demo), and auto-generated C++ stub code from \texttt{.proto} files. gRPC eliminates the need to write custom TCP framing, parsing, or serialization code.
+
+\textbf{Install:} Build from source or: \texttt{sudo apt install libgrpc++-dev}
+
+\textbf{Needed for:} \texttt{UploadChunk}, \texttt{DownloadChunk}, \texttt{ForwardChunk}, \texttt{AppendEntries}, \texttt{RequestVote}, \texttt{RegisterHeartbeat}, all metadata RPCs.
+\end{toolbox}
+
+\begin{toolbox}{Protocol Buffers (protobuf 3)}
+\textbf{Why:} Language-neutral, forward-compatible binary serialization format. Used to define all RPC message schemas in \texttt{distfs.proto}. The \texttt{protoc} compiler generates C++ classes for all messages. Protobuf is more efficient and type-safe than JSON or custom binary formats.
+
+\textbf{Install:} \texttt{sudo apt install protobuf-compiler libprotobuf-dev}
+\end{toolbox}
+
+\subsection{Cryptography \& Integrity}
+
+\begin{toolbox}{OpenSSL (libssl, libcrypto)}
+\textbf{Why:} Used for SHA-256 computation. Every 4\,MB chunk is hashed with \texttt{EVP\_DigestUpdate()} / \texttt{EVP\_DigestFinal()}. This is the core of the CAS naming scheme and integrity verification. OpenSSL's EVP API is hardware-accelerated on modern x86 (via SHA-NI instructions), making hashing fast even for large files.
+
+\textbf{Install:} \texttt{sudo apt install libssl-dev}
+\end{toolbox}
+
+\subsection{Filesystem \& FUSE}
+
+\begin{toolbox}{libfuse3 (FUSE: Filesystem in Userspace)}
+\textbf{Why (Stretch Goal):} Allows the client to expose the distributed store as a native Linux mountpoint. The FUSE daemon intercepts \texttt{open()}, \texttt{read()}, \texttt{write()}, \texttt{readdir()} syscalls from userspace and translates them to DistFS RPC calls. End result: users can use \texttt{cp}, \texttt{ls}, \texttt{vim}, \texttt{rsync} on the distributed store without any special client.
+
+\textbf{Install:} \texttt{sudo apt install libfuse3-dev fuse3}
+\end{toolbox}
+
+\subsection{Concurrency \& Timers}
+
+\begin{toolbox}{C++ Standard Library: \texttt{<thread>}, \texttt{<mutex>}, \texttt{<atomic>}, \texttt{<condition\_variable>}}
+\textbf{Why:} The Raft node runs multiple concurrent threads: (1) an RPC server thread, (2) an election timer thread, (3) a heartbeat sender thread (leader only), and (4) a log applier thread. \texttt{std::atomic<int64\_t>} is used for \texttt{current\_term} and \texttt{commit\_index} to avoid locks on hot paths.
+
+\textbf{No external library needed} — part of C++17 standard.
+\end{toolbox}
+
+\subsection{Development \& Debugging Tools}
+
+\begin{toolbox}{tmux}
+\textbf{Why:} Essential for the demo. Allows running all processes (2 metadata servers, 2 storage daemons, CLI client) in a single terminal session with split panes. Individual panes can be killed to simulate node crashes. Log output is visible in real time across all processes.
+
+\textbf{Install:} \texttt{sudo apt install tmux}
+\end{toolbox}
+
+\begin{toolbox}{Wireshark / tcpdump}
+\textbf{Why:} Network inspection during development and demo. Allows inspection of gRPC traffic between nodes, verifying heartbeat timing, and diagnosing connectivity issues on the LAN.
+
+\textbf{Install:} \texttt{sudo apt install wireshark tcpdump}
+\end{toolbox}
+
+\begin{toolbox}{GDB + AddressSanitizer}
+\textbf{Why:} C++ debugging tools. GDB for interactive debugging of Raft state transitions. AddressSanitizer (\texttt{-fsanitize=address}) for detecting memory corruption bugs in chunk I/O and network buffers. These are especially important for the Raft implementation where state corruption can cause subtle consistency bugs.
+
+\textbf{Install:} \texttt{sudo apt install gdb} (ASan is part of GCC)
+\end{toolbox}
+
+\begin{toolbox}{clang-format + clang-tidy}
+\textbf{Why:} Code formatting and static analysis. With 3 separate binaries sharing common headers, consistent code style is critical. \texttt{clang-tidy} catches common C++ pitfalls (use-after-free, uninitialized variables) before they manifest as Raft bugs.
+
+\textbf{Install:} \texttt{sudo apt install clang-format clang-tidy}
+\end{toolbox}
+
+\subsection{Testing Tools}
+
+\begin{toolbox}{Google Test (gtest)}
+\textbf{Why:} Unit testing framework for C++. Used to test: SHA-256 hashing correctness, WAL write/replay, Raft state machine transitions (leader election with mocked peers), chunk chunking/reassembly logic.
+
+\textbf{Install:} \texttt{sudo apt install libgtest-dev}
+\end{toolbox}
+
+\begin{toolbox}{dd / fio}
+\textbf{Why:} Stress testing tools for the storage layer. \texttt{dd} generates large binary test files for upload stress tests. \texttt{fio} benchmarks disk I/O on the \texttt{ext4} filesystem to establish baseline chunk write performance.
+
+\textbf{Install:} \texttt{sudo apt install fio} (\texttt{dd} is built in)
+\end{toolbox}
+
+\subsection{Complete Installation Script}
+
+\begin{lstlisting}[language=bash, caption={One-shot dependency install (Ubuntu/Debian)}]
+#!/bin/bash
+# install_deps.sh — run on BOTH laptops
+
+sudo apt update && sudo apt install -y \
+  g++ cmake ninja-build \
+  libgrpc++-dev grpc-proto \
+  protobuf-compiler libprotobuf-dev \
+  libssl-dev \
+  libfuse3-dev fuse3 \
+  tmux \
+  wireshark tcpdump \
+  gdb \
+  clang-format clang-tidy \
+  libgtest-dev \
+  fio \
+  net-tools nmap  # for network diagnostics
+
+echo "All dependencies installed."
+\end{lstlisting}
+
+% =====================================================================
+\section{Project Directory Structure}
+% =====================================================================
+
+\begin{lstlisting}[language=bash, caption={Recommended source tree}]
+distfs/
+├── CMakeLists.txt
+├── cluster.conf
+├── proto/
+│   └── distfs.proto           # All RPC definitions
+├── common/
+│   ├── sha256.hpp             # OpenSSL SHA-256 wrapper
+│   ├── wal.hpp / wal.cpp      # Write-Ahead Log implementation
+│   ├── config.hpp / config.cpp # Parse cluster.conf
+│   └── types.hpp              # Shared structs (ChunkInfo, NodeInfo)
+├── raft/
+│   ├── raft_node.hpp          # Core Raft state machine
+│   ├── raft_node.cpp
+│   ├── raft_log.hpp           # Persistent log abstraction
+│   └── raft_log.cpp
+├── metadata_server/
+│   ├── main.cpp               # Entry point
+│   ├── metadata_store.hpp     # file_map, chunk_map
+│   ├── metadata_store.cpp
+│   ├── metadata_service.hpp   # gRPC service impl
+│   └── metadata_service.cpp
+├── storage_daemon/
+│   ├── main.cpp
+│   ├── chunk_store.hpp        # Local ext4 chunk I/O
+│   ├── chunk_store.cpp
+│   ├── storage_service.hpp    # gRPC service impl
+│   ├── storage_service.cpp
+│   └── heartbeat_client.cpp   # Sends heartbeats to metadata
+├── client/
+│   ├── main.cpp               # CLI argument parsing
+│   ├── chunker.hpp / chunker.cpp  # 4MB splitting + SHA-256
+│   ├── uploader.cpp           # Upload orchestration
+│   ├── downloader.cpp         # Download orchestration
+│   └── fuse_driver.cpp        # (Stretch) FUSE integration
+└── tests/
+    ├── test_sha256.cpp
+    ├── test_wal.cpp
+    ├── test_raft.cpp
+    └── test_chunker.cpp
+\end{lstlisting}
+
+% =====================================================================
+\section{Development Timeline (Suggested)}
+% =====================================================================
+
+\begin{center}
+\begin{tabular}{>{\bfseries}p{1.5cm} p{4cm} p{7.5cm}}
+\toprule
+Week & Milestone & Details \\
+\midrule
+1 & Skeleton \& Proto & CMake setup, \texttt{distfs.proto}, generated stubs, hello-world gRPC ping \\
+\addlinespace
+2 & Storage Daemon & Chunk write/read on \texttt{ext4}, SHA-256 verify, \texttt{UploadChunk} / \texttt{DownloadChunk} RPCs \\
+\addlinespace
+3 & Chain Replication & \texttt{ForwardChunk} RPC, synchronous ack chain, test with 2 daemons \\
+\addlinespace
+4 & Metadata Server (basic) & \texttt{file\_map} + \texttt{chunk\_map}, WAL, \texttt{InitiateUpload} / \texttt{CommitUpload} RPCs \\
+\addlinespace
+5 & CLI Client & Chunking, upload/download orchestration, \texttt{list}, \texttt{delete} \\
+\addlinespace
+6 & Heartbeats \& Failure & Daemon heartbeats, dead detection, re-replication trigger \\
+\addlinespace
+7 & Raft Implementation & Leader election, log replication, safety tests with 3 metadata nodes \\
+\addlinespace
+8 & LAN Integration & Two-laptop setup, \texttt{cluster.conf}, full end-to-end demo \\
+\addlinespace
+Stretch & FUSE Driver & \texttt{libfuse3} wrapper, mount \& use with \texttt{ls}/\texttt{cp}/\texttt{rm} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{Conclusion}
+% =====================================================================
+
+DistFS demonstrates the core principles of distributed storage systems in a tightly scoped, fully from-scratch implementation. The key engineering decisions are:
+
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Custom Raft} for metadata fault tolerance — no black-box libraries, full understanding of every state transition.
+  \item \textbf{gRPC + Protobuf} for all inter-process communication — clean contracts, auto-generated stubs, streaming support for bulk data.
+  \item \textbf{Content-Addressable Storage} for the data plane — eliminates cache coherency, enables deduplication, provides free integrity verification.
+  \item \textbf{Synchronous chain replication} for strong read-after-write consistency — the client's ACK is proof of dual-node durability.
+  \item \textbf{WAL-backed in-memory metadata} — fast O(1) lookups with crash-safe persistence.
+  \item \textbf{Heartbeat-driven failure detection} — passive monitoring with active re-replication response.
+\end{enumerate}
+
+The system is deployable across two Linux laptops connected over a LAN, with the entire infrastructure scriptable via \texttt{tmux} for a compelling live demonstration of fault injection and recovery.
+
+\end{document}

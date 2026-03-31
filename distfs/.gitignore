@@ -1,0 +1,12 @@
+build/
+*.o
+*.a
+*.so
+*.d
+compile_commands.json
+.cache/
+.vscode/
+*.swp
+*~
+/var/
+proto_gen/
