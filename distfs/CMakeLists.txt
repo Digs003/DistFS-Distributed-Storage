@@ -17,7 +17,6 @@ find_package(gRPC CONFIG QUIET)
 if(NOT gRPC_FOUND)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(GRPC REQUIRED grpc++)
-  pkg_check_modules(GRPCPP REQUIRED grpc++_reflection)
 endif()
 
 # Helper to locate grpc_cpp_plugin
@@ -46,18 +45,18 @@ add_custom_command(
   OUTPUT ${GENERATED_PROTO_SRCS}
   COMMAND protobuf::protoc
   ARGS
-    --grpc_out="${PROTO_OUT}"
-    --cpp_out="${PROTO_OUT}"
-    -I "${PROTO_DIR}"
-    "--plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_EXECUTABLE}"
-    "${PROTO_SRC}"
+    --grpc_out=${PROTO_OUT}
+    --cpp_out=${PROTO_OUT}
+    -I ${PROTO_DIR}
+    --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_EXECUTABLE}
+    ${PROTO_SRC}
   DEPENDS "${PROTO_SRC}"
   COMMENT "Generating protobuf and gRPC stubs from distfs.proto"
   VERBATIM
 )
 
 add_library(distfs_proto STATIC ${GENERATED_PROTO_SRCS})
-target_include_directories(distfs_proto PUBLIC "${PROTO_OUT}")
+target_include_directories(distfs_proto PUBLIC "${CMAKE_BINARY_DIR}")
 if(gRPC_FOUND)
   target_link_libraries(distfs_proto PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 else()
@@ -131,8 +130,8 @@ enable_testing()
 find_package(GTest QUIET)
 
 if(GTest_FOUND)
-  macro(distfs_test name src)
-    add_executable(${name} ${src})
+  macro(distfs_test name)
+    add_executable(${name} ${ARGN})
     target_include_directories(${name} PRIVATE "${CMAKE_SOURCE_DIR}")
     target_link_libraries(${name} PRIVATE distfs_common GTest::gtest_main)
     add_test(NAME ${name} COMMAND ${name})
@@ -140,7 +139,7 @@ if(GTest_FOUND)
 
   distfs_test(test_sha256  tests/test_sha256.cpp)
   distfs_test(test_wal     tests/test_wal.cpp)
-  distfs_test(test_chunker tests/test_chunker.cpp)
+  distfs_test(test_chunker tests/test_chunker.cpp client/chunker.cpp)
 
   # Raft test also links distfs_raft
   add_executable(test_raft tests/test_raft.cpp)

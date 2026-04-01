@@ -58,13 +58,17 @@ void RaftNode::stop() {
 std::string RaftNode::hs_path() const { return wal_path_ + ".hs"; }
 
 void RaftNode::persist_hard_state() {
-    // Build the entry payload
+    // Build the entry payload — wire format:
+    //   [ current_term: int64_t (8) ][ commit_index: int64_t (8) ]
+    //   [ voted_for_len: uint32_t (4) ][ voted_for: bytes ]
     std::vector<uint8_t> buf;
-    buf.resize(8 + 4);
+    buf.resize(8 + 8 + 4);
     int64_t  term    = current_term_.load();
+    int64_t  ci      = commit_index_.load();
     uint32_t vf_len  = static_cast<uint32_t>(voted_for_.size());
-    std::memcpy(buf.data(),     &term,   8);
-    std::memcpy(buf.data() + 8, &vf_len, 4);
+    std::memcpy(buf.data(),      &term,   8);
+    std::memcpy(buf.data() + 8,  &ci,     8);
+    std::memcpy(buf.data() + 16, &vf_len, 4);
     buf.insert(buf.end(), voted_for_.begin(), voted_for_.end());
     WAL hs(hs_path());
     hs.append(buf);
@@ -75,16 +79,55 @@ void RaftNode::load_hard_state() {
     std::vector<uint8_t> last;
     WAL hs(hs_path());
     hs.replay([&](const std::vector<uint8_t>& data) { last = data; });
+
+    // Support both old format (term+voted_for, 12+ bytes) and
+    // new format (term+commit_index+voted_for, 20+ bytes).
+    // Distinguish by checking total size: old entries stored 8+4+vf_len bytes,
+    // new entries store 8+8+4+vf_len bytes.
     if (last.size() < 12) return; // nothing persisted yet
-    int64_t  term   = 0;
-    uint32_t vf_len = 0;
-    std::memcpy(&term,   last.data(),     8);
-    std::memcpy(&vf_len, last.data() + 8, 4);
-    if (last.size() < 12 + vf_len) return;
+
+    int64_t  term       = 0;
+    int64_t  saved_ci   = 0;
+    uint32_t vf_len     = 0;
+    size_t   vf_offset  = 0;
+
+    // Heuristic: if the 4 bytes at offset 8 look like a vf_len that fits
+    // in the old 12-byte layout, treat as old format. Otherwise new format.
+    uint32_t maybe_old_vf_len = 0;
+    std::memcpy(&maybe_old_vf_len, last.data() + 8, 4);
+    bool is_new_format = (last.size() >= 20) &&
+                         (12 + maybe_old_vf_len != last.size());
+
+    if (is_new_format) {
+        // New: term(8) + commit_index(8) + vf_len(4) + vf(vf_len)
+        if (last.size() < 20) return;
+        std::memcpy(&term,   last.data(),      8);
+        std::memcpy(&saved_ci, last.data() + 8, 8);
+        std::memcpy(&vf_len, last.data() + 16, 4);
+        vf_offset = 20;
+    } else {
+        // Old: term(8) + vf_len(4) + vf(vf_len)
+        std::memcpy(&term,   last.data(),     8);
+        std::memcpy(&vf_len, last.data() + 8, 4);
+        vf_offset = 12;
+        saved_ci = 0; // unknown — will catch up via Raft
+    }
+
+    if (last.size() < vf_offset + vf_len) return;
     current_term_.store(term);
-    voted_for_.assign(reinterpret_cast<const char*>(last.data() + 12), vf_len);
+    voted_for_.assign(reinterpret_cast<const char*>(last.data() + vf_offset), vf_len);
+
+    // Restore commit_index and let the apply loop catch up immediately
+    if (saved_ci > 0) {
+        // Clamp to what we actually have in the log
+        int64_t log_last = log_.last_index();
+        int64_t ci = std::min(saved_ci, log_last);
+        commit_index_.store(ci);
+    }
+
     std::cout << "[raft:" << node_id_ << "] Restored hard state: term="
-              << term << " voted_for=" << voted_for_ << "\n";
+              << term << " commit_index=" << commit_index_.load()
+              << " voted_for=" << voted_for_ << "\n";
 }
 
 // ============================================================
@@ -223,6 +266,7 @@ void RaftNode::reset_election_timer() {
     if (req.leader_commit() > commit_index_.load()) {
         int64_t new_commit = std::min(req.leader_commit(), log_.last_index());
         commit_index_.store(new_commit);
+        persist_hard_state(); // survive restarts
         apply_cv_.notify_one();
     }
 
@@ -403,6 +447,7 @@ void RaftNode::maybe_advance_commit_index() {
             if (match_index_.count(p.id) && match_index_.at(p.id) >= n) ++count;
         if (count >= majority) {
             commit_index_.store(n);
+            persist_hard_state(); // survive restarts
             apply_cv_.notify_one();
             commit_cv_.notify_all();
             break;

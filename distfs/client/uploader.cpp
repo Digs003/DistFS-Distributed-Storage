@@ -14,10 +14,11 @@ static constexpr size_t FRAME_SIZE = 1024 * 1024; // 1 MB gRPC frame
 /// meta_stub: connected stub to the Metadata Server (leader).
 void upload_file(const std::string& local_path,
                  const std::string& remote_name,
-                 ::distfs::MetadataService::Stub& meta_stub) {
+                 ::distfs::MetadataService::Stub& meta_stub,
+                 int64_t chunk_size) {
     // ── Step 1: Chunk the file ──────────────────────────────────────────────
     std::cout << "[1/4] Chunking: " << local_path << "\n";
-    auto chunks = split_file(local_path);
+    auto chunks = split_file(local_path, chunk_size);
     for (auto& c : chunks)
         std::cout << "      Chunk " << c.chunk_index << ": sha256=" << c.chunk_hash.substr(0,8)
                   << "... (" << c.size_bytes / (1024*1024.0) << " MB)\n";

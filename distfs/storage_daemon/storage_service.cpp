@@ -1,4 +1,5 @@
 #include "storage_daemon/storage_service.hpp"
+#include "common/logger.hpp"
 #include "common/sha256.hpp"
 #include <grpcpp/grpcpp.h>
 
@@ -35,10 +36,14 @@ grpc::Status StorageServiceImpl::UploadChunk(
         return grpc::Status::OK;
     }
 
+    VLOG("storage", "UploadChunk: hash=" + chunk_hash.substr(0, 8) +
+         "... size=" + std::to_string(buf.size()) + "B node=" + node_id_);
     try {
         store_.write_chunk(chunk_hash, buf);
+        VLOG("storage", "UploadChunk OK: hash=" + chunk_hash.substr(0, 8) + "...");
         reply->set_success(true);
     } catch (const std::exception& e) {
+        VLOG("storage", "UploadChunk FAILED: " + std::string(e.what()));
         reply->set_success(false);
         reply->set_error_message(e.what());
     }
@@ -53,8 +58,11 @@ grpc::Status StorageServiceImpl::DownloadChunk(
     const ::distfs::ChunkRequest* req,
     grpc::ServerWriter<::distfs::ChunkData>* writer)
 {
+    VLOG("storage", "DownloadChunk: hash=" + req->chunk_hash().substr(0, 8) +
+         "... node=" + node_id_);
     try {
         auto data = store_.read_chunk(req->chunk_hash());
+        VLOG("storage", "DownloadChunk streaming: " + std::to_string(data.size()) + "B");
         size_t offset = 0;
         while (offset < data.size()) {
             size_t frame_len = std::min(FRAME_SIZE, data.size() - offset);
@@ -66,6 +74,7 @@ grpc::Status StorageServiceImpl::DownloadChunk(
             offset += frame_len;
         }
     } catch (const std::exception& e) {
+        VLOG("storage", "DownloadChunk NOT_FOUND: " + std::string(e.what()));
         return grpc::Status(grpc::StatusCode::NOT_FOUND, e.what());
     }
     return grpc::Status::OK;
@@ -79,10 +88,14 @@ grpc::Status StorageServiceImpl::DeleteChunk(
     const ::distfs::ChunkRequest* req,
     ::distfs::ChunkAck* reply)
 {
+    VLOG("storage", "DeleteChunk: hash=" + req->chunk_hash().substr(0, 8) +
+         "... node=" + node_id_);
     try {
         store_.delete_chunk(req->chunk_hash());
+        VLOG("storage", "DeleteChunk OK");
         reply->set_success(true);
     } catch (const std::exception& e) {
+        VLOG("storage", "DeleteChunk FAILED: " + std::string(e.what()));
         reply->set_success(false);
         reply->set_error_message(e.what());
     }
@@ -98,6 +111,7 @@ grpc::Status StorageServiceImpl::ForwardChunk(
     grpc::ServerReader<::distfs::ChunkData>* reader,
     ::distfs::ChunkAck* reply)
 {
+    VLOG("storage", "ForwardChunk (daemon-to-daemon): node=" + node_id_);
     return UploadChunk(ctx, reader, reply);
 }
 
@@ -109,16 +123,22 @@ grpc::Status StorageServiceImpl::ReplicateChunk(
     const ::distfs::ReplicateRequest* req,
     ::distfs::ChunkAck* reply)
 {
+    VLOG("storage", "ReplicateChunk: hash=" + req->chunk_hash().substr(0, 8) +
+         "... -> " + req->target_addr() + " from node=" + node_id_);
     try {
         auto data = store_.read_chunk(req->chunk_hash());
         auto status = forward_to(req->target_addr(), req->chunk_hash(), data);
         if (!status.ok()) {
+            VLOG("storage", "ReplicateChunk FAILED: " + status.error_message());
             reply->set_success(false);
             reply->set_error_message(status.error_message());
         } else {
+            VLOG("storage", "ReplicateChunk OK: hash=" + req->chunk_hash().substr(0, 8) +
+                 "... forwarded " + std::to_string(data.size()) + "B to " + req->target_addr());
             reply->set_success(true);
         }
     } catch (const std::exception& e) {
+        VLOG("storage", "ReplicateChunk FAILED (read error): " + std::string(e.what()));
         reply->set_success(false);
         reply->set_error_message(e.what());
     }
@@ -133,7 +153,10 @@ grpc::Status StorageServiceImpl::HasChunk(
     const ::distfs::ChunkRequest* req,
     ::distfs::ChunkAck* reply)
 {
-    reply->set_success(store_.has_chunk(req->chunk_hash()));
+    bool has = store_.has_chunk(req->chunk_hash());
+    VLOG("storage", "HasChunk: hash=" + req->chunk_hash().substr(0, 8) +
+         "... -> " + (has ? "YES" : "NO") + " node=" + node_id_);
+    reply->set_success(has);
     return grpc::Status::OK;
 }
 

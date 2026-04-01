@@ -30,7 +30,7 @@ static std::string read_str(const uint8_t* p, size_t& off) {
 std::vector<uint8_t> MetadataStore::cmd_commit_upload(
     const std::string& filename, int64_t revision_id, int64_t total_bytes,
     const std::vector<std::string>& chunk_hashes,
-    const std::vector<NodePlacement>& placements)
+    const std::vector<LocalNodePlacement>& placements)
 {
     std::vector<uint8_t> buf;
     buf.push_back(1); // type

@@ -5,11 +5,11 @@
 
 namespace distfs {
 
-std::vector<ChunkInfo> split_file(const std::string& path, int64_t chunk_size) {
+std::vector<LocalChunkInfo> split_file(const std::string& path, int64_t chunk_size) {
     std::ifstream file(path, std::ios::binary);
     if (!file) throw std::runtime_error("Cannot open file for chunking: " + path);
 
-    std::vector<ChunkInfo> chunks;
+    std::vector<LocalChunkInfo> chunks;
     std::vector<char> buf(chunk_size);
     int32_t idx = 0;
 
@@ -18,7 +18,7 @@ std::vector<ChunkInfo> split_file(const std::string& path, int64_t chunk_size) {
         auto bytes_read = file.gcount();
         if (bytes_read == 0) break;
 
-        ChunkInfo ci;
+        LocalChunkInfo ci;
         ci.chunk_index = idx++;
         ci.size_bytes  = bytes_read;
         ci.chunk_hash  = hash_bytes(buf.data(), static_cast<size_t>(bytes_read));

@@ -56,7 +56,7 @@ public:
     static std::vector<uint8_t> cmd_commit_upload(
         const std::string& filename, int64_t revision_id, int64_t total_bytes,
         const std::vector<std::string>& chunk_hashes,
-        const std::vector<NodePlacement>& placements);
+        const std::vector<LocalNodePlacement>& placements);
 
     static std::vector<uint8_t> cmd_delete_file(const std::string& filename);
 

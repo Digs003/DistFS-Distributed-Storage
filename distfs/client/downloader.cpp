@@ -4,6 +4,8 @@
 #include <grpcpp/grpcpp.h>
 #include <iostream>
 #include <fstream>
+#include <vector>
+#include <stdexcept>
 #include <stdexcept>
 
 namespace distfs {
@@ -31,18 +33,24 @@ void download_file(const std::string& remote_name,
     for (int i = 0; i < meta.chunks_size(); ++i) {
         const auto& ci   = meta.chunks(i);
         const auto& pl   = meta.placements(i);
-        std::string addr = pl.primary_addr().empty() ? pl.primary_node() : pl.primary_addr();
+        std::string paddr = pl.primary_addr().empty() ? pl.primary_node() : pl.primary_addr();
+        std::string saddr = pl.secondary_addr().empty() ? pl.secondary_node() : pl.secondary_addr();
         std::string tmp  = out_path + ".chunk" + std::to_string(i) + ".tmp";
         bool ok = false;
 
-        for (const std::string& try_addr : {addr, pl.secondary_node()}) {
-            if (try_addr.empty()) continue;
+        std::vector<std::string> err_msgs;
+        for (const std::string& try_addr : {paddr, saddr}) {
+            if (try_addr.empty()) {
+                err_msgs.push_back("empty address");
+                continue;
+            }
             try {
                 auto chan = grpc::CreateChannel(try_addr, grpc::InsecureChannelCredentials());
                 auto stub = ::distfs::StorageService::NewStub(chan);
                 ::distfs::ChunkRequest creq;
                 creq.set_chunk_hash(ci.chunk_hash());
                 grpc::ClientContext cctx;
+                cctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
                 auto reader = stub->DownloadChunk(&cctx, creq);
                 std::ofstream tmp_file(tmp, std::ios::binary | std::ios::trunc);
                 ::distfs::ChunkData frame;
@@ -50,9 +58,16 @@ void download_file(const std::string& remote_name,
                     tmp_file.write(frame.data().data(), frame.data().size());
                 auto fst = reader->Finish();
                 if (fst.ok()) { ok = true; break; }
-            } catch (...) {}
+                else { err_msgs.push_back(try_addr + ": " + fst.error_message()); }
+            } catch (const std::exception& e) {
+                err_msgs.push_back(try_addr + " exception: " + e.what());
+            }
         }
-        if (!ok) throw std::runtime_error("Failed to download chunk " + std::to_string(i));
+        if (!ok) {
+            std::string all_errs;
+            for (auto& e : err_msgs) all_errs += "[" + e + "] ";
+            throw std::runtime_error("Failed to download chunk " + std::to_string(i) + ". Errors: " + all_errs);
+        }
         std::cout << "      Chunk " << i << " [OK]\n";
         tmp_paths.push_back(tmp);
     }

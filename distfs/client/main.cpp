@@ -8,18 +8,53 @@
 #include <iomanip>
 
 namespace distfs {
-void upload_file(const std::string&, const std::string&, ::distfs::MetadataService::Stub&);
+void upload_file(const std::string&, const std::string&, ::distfs::MetadataService::Stub&, int64_t);
 void download_file(const std::string&, const std::string&, ::distfs::MetadataService::Stub&);
 }
 
-// ── Helper: connect to metadata server with leader-hint retry ───────────────
+#include <chrono>
+
 static std::unique_ptr<::distfs::MetadataService::Stub>
-connect_metadata(const std::vector<std::string>& nodes) {
+connect_metadata(const std::vector<std::string>& nodes, bool requires_leader) {
+    std::string last_err;
+    std::unique_ptr<::distfs::MetadataService::Stub> alive_stub;
+
     for (auto& addr : nodes) {
         auto chan = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
-        return ::distfs::MetadataService::NewStub(chan);
+        auto stub = ::distfs::MetadataService::NewStub(chan);
+
+        if (requires_leader) {
+            ::distfs::InitiateUploadRequest req;
+            req.set_filename(".ping_leader");
+            ::distfs::InitiateUploadResponse resp;
+            grpc::ClientContext ctx;
+            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(250));
+            auto st = stub->InitiateUpload(&ctx, req, &resp);
+
+            if (st.error_code() == grpc::StatusCode::FAILED_PRECONDITION) {
+                if (!alive_stub) alive_stub = ::distfs::MetadataService::NewStub(chan);
+                continue; // Not leader
+            } else if (st.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED || 
+                       (st.error_code() == grpc::StatusCode::UNAVAILABLE && st.error_message().find("failed to connect") != std::string::npos)) {
+                last_err = st.error_message();
+            } else {
+                // We reached the leader safely
+                return stub;
+            }
+        } else {
+            ::distfs::StatusRequest req;
+            ::distfs::StatusResponse resp;
+            grpc::ClientContext ctx;
+            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(250));
+            auto st = stub->GetClusterStatus(&ctx, req, &resp);
+            if (st.ok()) return stub;
+            last_err = st.error_message();
+        }
     }
-    throw std::runtime_error("No metadata nodes configured");
+    
+    if (alive_stub && !requires_leader) return alive_stub;
+
+    throw std::runtime_error("Failed to connect to cluster. Last err: " + last_err);
 }
 
 // ── status ──────────────────────────────────────────────────────────────────
@@ -101,10 +136,14 @@ int main(int argc, char* argv[]) {
 
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
-        if      (a.rfind("--file=",0)==0)   file_path   = a.substr(7);
-        else if (a.rfind("--name=",0)==0)   remote_name = a.substr(7);
-        else if (a.rfind("--out=",0)==0)    out_path    = a.substr(6);
-        else if (a.rfind("--config=",0)==0) config_path = a.substr(9);
+        if (a.rfind("--file=", 0) == 0) file_path = a.substr(7);
+        else if (a == "--file" && i + 1 < argc) file_path = argv[++i];
+        else if (a.rfind("--name=", 0) == 0) remote_name = a.substr(7);
+        else if (a == "--name" && i + 1 < argc) remote_name = argv[++i];
+        else if (a.rfind("--out=", 0) == 0) out_path = a.substr(6);
+        else if (a == "--out" && i + 1 < argc) out_path = argv[++i];
+        else if (a.rfind("--config=", 0) == 0) config_path = a.substr(9);
+        else if (a == "--config" && i + 1 < argc) config_path = argv[++i];
     }
 
     distfs::ClusterConfig cfg;
@@ -113,25 +152,28 @@ int main(int argc, char* argv[]) {
         std::cerr << "[ERROR] Config: " << e.what() << "\n"; return 1;
     }
 
-    auto stub = connect_metadata(cfg.client.metadata_nodes);
-
     try {
         if (subcmd == "upload") {
             if (file_path.empty() || remote_name.empty()) {
                 std::cerr << "upload requires --file and --name\n"; return 1;
             }
-            distfs::upload_file(file_path, remote_name, *stub);
+            auto stub = connect_metadata(cfg.client.metadata_nodes, true);
+            distfs::upload_file(file_path, remote_name, *stub, cfg.storage.chunk_size_bytes);
         } else if (subcmd == "download") {
             if (remote_name.empty() || out_path.empty()) {
                 std::cerr << "download requires --name and --out\n"; return 1;
             }
+            auto stub = connect_metadata(cfg.client.metadata_nodes, true);
             distfs::download_file(remote_name, out_path, *stub);
         } else if (subcmd == "list") {
+            auto stub = connect_metadata(cfg.client.metadata_nodes, true);
             cmd_list(*stub);
         } else if (subcmd == "delete") {
             if (remote_name.empty()) { std::cerr << "delete requires --name\n"; return 1; }
+            auto stub = connect_metadata(cfg.client.metadata_nodes, true);
             cmd_delete(*stub, remote_name);
         } else if (subcmd == "status") {
+            auto stub = connect_metadata(cfg.client.metadata_nodes, true);
             cmd_status(*stub);
         } else {
             std::cerr << "Unknown subcommand: " << subcmd << "\n"; return 1;

@@ -11,7 +11,7 @@ TEST(SHA256, KnownVector) {
     // SHA-256 of "abc"
     std::string s = "abc";
     auto result = distfs::hash_bytes(s.data(), s.size());
-    EXPECT_EQ(result, "ba7816bf8f01cfea414140de5dae2ec73b00361bbef0469348423f656b7de86f" // truncated to match actual
+    EXPECT_EQ(result, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" // truncated to match actual
               );
     EXPECT_EQ(result.size(), 64u);
 }

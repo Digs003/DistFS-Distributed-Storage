@@ -3,8 +3,8 @@
 set -e
 
 sudo apt update && sudo apt install -y \
-  g++ cmake ninja-build \
-  libgrpc++-dev grpc-proto \
+  g++ cmake ninja-build pkg-config \
+  libgrpc++-dev protobuf-compiler-grpc \
   protobuf-compiler libprotobuf-dev \
   libssl-dev \
   libfuse3-dev fuse3 \

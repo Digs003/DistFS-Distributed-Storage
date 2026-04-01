@@ -1,4 +1,5 @@
 #include "storage_daemon/heartbeat_client.hpp"
+#include "common/logger.hpp"
 #include "proto_gen/distfs.grpc.pb.h"
 #include <grpcpp/grpcpp.h>
 #include <iostream>
@@ -34,13 +35,17 @@ void HeartbeatClient::update_stats(int64_t used_bytes, int64_t total_bytes, int6
 
 void HeartbeatClient::run() {
     while (running_) {
-        size_t idx = current_leader_idx_.load();
-        bool sent = send_heartbeat(metadata_addrs_[idx]);
-        if (!sent) {
-            // Try next node in round-robin
-            size_t next = (idx + 1) % metadata_addrs_.size();
-            current_leader_idx_.store(next);
+        size_t start_idx = current_leader_idx_.load();
+        
+        for (size_t i = 0; i < metadata_addrs_.size(); ++i) {
+            size_t idx = (start_idx + i) % metadata_addrs_.size();
+            bool sent = send_heartbeat(metadata_addrs_[idx]);
+            if (sent) {
+                if (i > 0) current_leader_idx_.store(idx);
+                break;
+            }
         }
+        
         std::this_thread::sleep_for(std::chrono::seconds(interval_sec_));
     }
 }
@@ -70,16 +75,14 @@ bool HeartbeatClient::send_heartbeat(const std::string& addr) {
         return false;
     }
 
-    if (!resp.leader_hint().empty() && resp.leader_hint() != addr) {
-        // Metadata server redirected us to the actual leader
-        for (size_t i = 0; i < metadata_addrs_.size(); ++i) {
-            if (metadata_addrs_[i] == resp.leader_hint()) {
-                current_leader_idx_.store(i);
-                break;
-            }
-        }
+    if (resp.ok()) {
+        VLOG("storage", "Heartbeat OK -> " + addr + " (leader accepted)");
+    } else {
+        VLOG("storage", "Heartbeat -> " + addr + " (not leader, hint=" +
+             resp.leader_hint() + ")");
     }
-    return true;
+    // resp.ok() is true only if the node is the leader and accepted the heartbeat
+    return resp.ok();
 }
 
 } // namespace distfs

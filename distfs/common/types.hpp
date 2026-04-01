@@ -7,7 +7,7 @@ namespace distfs {
 // Unique identifier for a storage daemon node
 using NodeID = std::string;
 
-struct ChunkInfo {
+struct LocalChunkInfo {
     std::string chunk_hash;   // SHA-256 hex string
     int64_t     size_bytes;
     int32_t     chunk_index;
@@ -23,7 +23,7 @@ struct NodeInfo {
     enum class Status { ALIVE, DEAD } status = Status::ALIVE;
 };
 
-struct NodePlacement {
+struct LocalNodePlacement {
     std::string chunk_hash;
     std::string primary_node;    // NodeID (e.g. "daemon-A")
     std::string primary_addr;
