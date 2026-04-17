@@ -15,7 +15,7 @@ static constexpr size_t FRAME_SIZE = 1024 * 1024;
 void download_file(const std::string& remote_name,
                    const std::string& out_path,
                    ::distfs::MetadataService::Stub& meta_stub) {
-    // ── Step 1: GetFileMetadata ─────────────────────────────────────────────
+    // Step 1: GetFileMetadata 
     std::cout << "[1/3] Fetching chunk map for: " << remote_name << "\n";
     ::distfs::GetFileMetadataRequest req;
     req.set_filename(remote_name);
@@ -27,7 +27,7 @@ void download_file(const std::string& remote_name,
     const auto& meta = resp.metadata();
     std::cout << "      " << meta.chunks_size() << " chunks\n";
 
-    // ── Step 2: Download each chunk to a temp file ──────────────────────────
+    // Step 2: Download each chunk to a temp file
     std::cout << "[2/3] Fetching chunks...\n";
     std::vector<std::string> tmp_paths;
     for (int i = 0; i < meta.chunks_size(); ++i) {
@@ -72,7 +72,7 @@ void download_file(const std::string& remote_name,
         tmp_paths.push_back(tmp);
     }
 
-    // ── Step 3: Reassemble and verify ──────────────────────────────────────
+    // Step 3: Reassemble and verify
     std::cout << "[3/3] Reassembling file...\n";
     std::string final_hash = reassemble_file(tmp_paths, out_path);
     // Cleanup temps

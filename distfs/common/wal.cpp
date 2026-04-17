@@ -23,7 +23,7 @@ namespace {
             remaining -= written;
         }
     }
-} // anonymous namespace
+}
 
 WAL::WAL(const std::string& path) : path_(path) {
     fd_ = ::open(path_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);

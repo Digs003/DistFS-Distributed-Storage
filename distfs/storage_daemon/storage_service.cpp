@@ -12,8 +12,8 @@ StorageServiceImpl::StorageServiceImpl(const std::string& data_dir,
     : store_(data_dir), node_id_(node_id) {}
 
 // --------------------------------------------------------
-// UploadChunk: receive streaming ChunkData → write to disk
-// If ChunkRequest.secondary_addr is set → ForwardChunk after write
+// UploadChunk: receive streaming ChunkData -> write to disk
+// If ChunkRequest.secondary_addr is set -> ForwardChunk after write
 // --------------------------------------------------------
 grpc::Status StorageServiceImpl::UploadChunk(
     grpc::ServerContext* /*ctx*/,
@@ -51,7 +51,7 @@ grpc::Status StorageServiceImpl::UploadChunk(
 }
 
 // --------------------------------------------------------
-// DownloadChunk: read from disk → stream in 1 MB frames
+// DownloadChunk: read from disk -> stream in 1 MB frames
 // --------------------------------------------------------
 grpc::Status StorageServiceImpl::DownloadChunk(
     grpc::ServerContext* /*ctx*/,
@@ -103,7 +103,7 @@ grpc::Status StorageServiceImpl::DeleteChunk(
 }
 
 // --------------------------------------------------------
-// ForwardChunk: receive bytes from peer → write to local disk
+// ForwardChunk: receive bytes from peer -> write to local disk
 // (same as UploadChunk but called via daemon-to-daemon RPC)
 // --------------------------------------------------------
 grpc::Status StorageServiceImpl::ForwardChunk(
@@ -116,7 +116,7 @@ grpc::Status StorageServiceImpl::ForwardChunk(
 }
 
 // --------------------------------------------------------
-// ReplicateChunk: read local chunk → ForwardChunk to target
+// ReplicateChunk: read local chunk -> ForwardChunk to target
 // --------------------------------------------------------
 grpc::Status StorageServiceImpl::ReplicateChunk(
     grpc::ServerContext* /*ctx*/,
