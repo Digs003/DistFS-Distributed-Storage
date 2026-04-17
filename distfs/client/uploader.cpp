@@ -73,7 +73,10 @@ void upload_file(const std::string& local_path,
         auto finish_st = writer->Finish();
         if (!finish_st.ok() || !ack.success())
             throw std::runtime_error("Chunk upload failed: " + ack.error_message());
-        std::cout << "      Chunk " << i << " → " << pl.primary_node() << " [OK]\n";
+        
+        std::string secondary_info = pl.secondary_node().empty() ? "none" : pl.secondary_node();
+        std::cout << "      Chunk " << i << " → Primary: " << pl.primary_node() 
+                  << " | Secondary: " << secondary_info << " [OK]\n";
     }
 
     // ── Step 4: CommitUpload ────────────────────────────────────────────────

@@ -27,6 +27,15 @@ public:
     /// Directory where chunks are stored.
     const std::string& data_dir() const { return data_dir_; }
 
+    struct Stats {
+        int64_t used_bytes;
+        int64_t total_bytes;
+        int64_t chunk_count;
+    };
+
+    /// Calculate current usage stats by scanning the data directory.
+    Stats get_stats() const;
+
 private:
     std::string data_dir_;
     std::string chunk_path(const std::string& hash) const;

@@ -7,11 +7,14 @@
 #include <cstring>
 #include <cerrno>
 #include <fstream>
+#include <filesystem>
 
 #include <filesystem>
 namespace fs = std::filesystem;
 
 namespace distfs {
+
+namespace fs = std::filesystem;
 
 ChunkStore::ChunkStore(const std::string& data_dir) : data_dir_(data_dir) {
     // Ensure root data dir exists
@@ -87,6 +90,24 @@ void ChunkStore::delete_chunk(const std::string& hash) {
     std::string path = chunk_path(hash);
     if (::unlink(path.c_str()) != 0 && errno != ENOENT)
         throw std::runtime_error("ChunkStore: delete failed: " + std::string(strerror(errno)));
+}
+
+ChunkStore::Stats ChunkStore::get_stats() const {
+    Stats s = {0, 0, 0};
+    try {
+        if (fs::exists(data_dir_)) {
+            for (const auto& entry : fs::recursive_directory_iterator(data_dir_)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".bin") {
+                    s.used_bytes += static_cast<int64_t>(fs::file_size(entry.path()));
+                    s.chunk_count++;
+                }
+            }
+            auto space = fs::space(data_dir_);
+            s.total_bytes = static_cast<int64_t>(space.capacity);
+        }
+    } catch (...) {
+    }
+    return s;
 }
 
 } // namespace distfs
