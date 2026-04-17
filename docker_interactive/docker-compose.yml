@@ -1,0 +1,15 @@
+services:
+  distfs-shell:
+    build:
+      context: ..
+      dockerfile: docker_interactive/Dockerfile
+    image: distfs-interactive:latest
+    container_name: distfs-interactive
+    volumes:
+      - ..:/distfs
+    working_dir: /distfs
+    stdin_open: true
+    tty: true
+    network_mode: host
+    privileged: true # Useful for FUSE and network tools
+    command: /bin/bash

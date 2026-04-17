@@ -309,8 +309,24 @@ void RaftNode::start_election() {
     int cluster_size = static_cast<int>(peers_.size()) + 1;
     int majority      = cluster_size / 2 + 1;
     std::atomic<int> votes{1}; // self-vote
-    std::mutex vote_mu;
 
+    // Check for majority immediately (handles 1-node cluster)
+    if (votes.load() >= majority) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (state_.load() == RaftState::CANDIDATE) {
+            state_.store(RaftState::LEADER);
+            current_leader_id_ = node_id_;
+            for (const auto& p : peers_) {
+                next_index_[p.id]  = log_.last_index() + 1;
+                match_index_[p.id] = 0;
+            }
+            std::cout << "[raft:" << node_id_ << "] Became leader term " << new_term << "\n";
+            if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
+            heartbeat_thread_ = std::thread(&RaftNode::heartbeat_loop, this);
+        }
+    }
+
+    std::mutex vote_mu;
     std::vector<std::thread> threads;
     for (const auto& peer : peers_) {
         threads.emplace_back([&, peer]() {
@@ -489,6 +505,13 @@ bool RaftNode::submit(const std::vector<uint8_t>& command) {
         e.term    = current_term_.load();
         e.command = command;
         my_index  = log_.append(e);
+
+        // For 1-node cluster, we can commit immediately
+        if (peers_.empty()) {
+            commit_index_.store(my_index);
+            apply_cv_.notify_one();
+        }
+
         // Immediately try to replicate
         for (const auto& peer : peers_)
             next_index_[peer.id]; // ensure entry exists (default 0 is fine, send_ae checks)

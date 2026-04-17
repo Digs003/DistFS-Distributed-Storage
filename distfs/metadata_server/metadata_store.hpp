@@ -49,7 +49,7 @@ public:
 
     // Chunk stats for status command
     int64_t total_chunks()       const;
-    int64_t under_replicated()   const;
+    int64_t under_replicated(int rf_threshold)   const;
     int64_t orphaned_chunks()    const;
 
     // Commands (serialize to bytes for Raft)

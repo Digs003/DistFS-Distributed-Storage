@@ -219,11 +219,11 @@ int64_t MetadataStore::total_chunks() const {
     std::lock_guard<std::mutex> lk(mu_);
     return static_cast<int64_t>(chunk_map_.size());
 }
-int64_t MetadataStore::under_replicated() const {
+int64_t MetadataStore::under_replicated(int rf_threshold) const {
     std::lock_guard<std::mutex> lk(mu_);
     int64_t count = 0;
     for (auto& [h, nodes] : chunk_map_)
-        if (static_cast<int>(nodes.size()) < 2) ++count; // RF=2
+        if (static_cast<int>(nodes.size()) < rf_threshold) ++count;
     return count;
 }
 int64_t MetadataStore::orphaned_chunks() const {

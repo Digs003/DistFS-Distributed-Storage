@@ -56,11 +56,11 @@ MetadataServiceImpl::InitiateUpload(grpc::ServerContext *,
   }
 
   auto alive = store_.alive_nodes();
-  if (alive.size() < 2) {
+  if (static_cast<int>(alive.size()) < replication_factor_) {
     VLOG("metadata", "InitiateUpload rejected: only " +
-         std::to_string(alive.size()) + " alive node(s)");
+         std::to_string(alive.size()) + " alive node(s) but RF=" + std::to_string(replication_factor_));
     return grpc::Status(grpc::StatusCode::UNAVAILABLE,
-                        "Need at least 2 alive storage nodes");
+                        "Need at least " + std::to_string(replication_factor_) + " alive storage nodes");
   }
 
   std::string upload_token =
@@ -72,11 +72,16 @@ MetadataServiceImpl::InitiateUpload(grpc::ServerContext *,
   for (int i = 0; i < req->chunks_size(); ++i) {
     const auto &chunk = req->chunks(i);
     std::string primary = store_.select_primary();
-    std::string secondary = store_.select_secondary(primary);
+    std::string secondary;
+    if (replication_factor_ > 1) {
+        secondary = store_.select_secondary(primary);
+    }
     auto *p = resp->add_placements();
     p->set_chunk_hash(chunk.chunk_hash());
     p->set_primary_node(primary);
-    p->set_secondary_node(secondary);
+    if (!secondary.empty()) {
+        p->set_secondary_node(secondary);
+    }
 
     LocalNodePlacement loc;
     loc.chunk_hash = chunk.chunk_hash();
@@ -85,18 +90,20 @@ MetadataServiceImpl::InitiateUpload(grpc::ServerContext *,
 
     // Resolve routable addresses from registry
     std::string paddr = store_.node_address(primary);
-    std::string saddr = store_.node_address(secondary);
     if (!paddr.empty()) {
       p->set_primary_addr(paddr);
       loc.primary_addr = paddr;
     }
-    if (!saddr.empty()) {
-      p->set_secondary_addr(saddr);
-      loc.secondary_addr = saddr;
+    if (!secondary.empty()) {
+        std::string saddr = store_.node_address(secondary);
+        if (!saddr.empty()) {
+            p->set_secondary_addr(saddr);
+            loc.secondary_addr = saddr;
+        }
     }
     VLOG("metadata", "  chunk[" + std::to_string(i) + "] " +
          chunk.chunk_hash().substr(0, 8) + "... -> primary=" + primary +
-         " secondary=" + secondary);
+         " secondary=" + (secondary.empty() ? "(none)" : secondary));
     transient_placements.push_back(loc);
   }
 
@@ -276,7 +283,7 @@ MetadataServiceImpl::GetClusterStatus(grpc::ServerContext *,
   resp->set_current_term(raft_.current_term());
   resp->set_log_index(raft_.last_log_index());
   resp->set_total_chunks(store_.total_chunks());
-  resp->set_under_replicated(store_.under_replicated());
+  resp->set_under_replicated(store_.under_replicated(replication_factor_));
   resp->set_orphaned_chunks(store_.orphaned_chunks());
   for (auto &n : store_.all_nodes()) {
     auto *ns = resp->add_storage_nodes();

@@ -8,27 +8,34 @@
 #include <cerrno>
 #include <fstream>
 
+#include <filesystem>
+namespace fs = std::filesystem;
+
 namespace distfs {
 
 ChunkStore::ChunkStore(const std::string& data_dir) : data_dir_(data_dir) {
     // Ensure root data dir exists
-    if (::mkdir(data_dir_.c_str(), 0755) != 0 && errno != EEXIST)
-        throw std::runtime_error("ChunkStore: cannot create data_dir: " + std::string(strerror(errno)));
+    std::error_code ec;
+    if (!fs::create_directories(data_dir_, ec) && ec)
+        throw std::runtime_error("ChunkStore: cannot create data_dir: " + ec.message());
 }
 
 std::string ChunkStore::chunk_path(const std::string& hash) const {
     // /var/distfs/chunks/<prefix2>/<full-hash>.bin
-    std::string prefix_dir = data_dir_ + "/" + hash.substr(0, 2);
-    return prefix_dir + "/" + hash + ".bin";
+    fs::path p(data_dir_);
+    p /= hash.substr(0, 2);
+    p /= hash + ".bin";
+    return p.string();
 }
 
 void ChunkStore::write_chunk(const std::string& hash, const std::vector<uint8_t>& data) {
     if (has_chunk(hash)) return; // idempotent
 
     // Create prefix subdirectory
-    std::string prefix_dir = data_dir_ + "/" + hash.substr(0, 2);
-    if (::mkdir(prefix_dir.c_str(), 0755) != 0 && errno != EEXIST)
-        throw std::runtime_error("ChunkStore: mkdir prefix failed: " + std::string(strerror(errno)));
+    fs::path prefix_dir = fs::path(data_dir_) / hash.substr(0, 2);
+    std::error_code ec;
+    if (!fs::create_directories(prefix_dir, ec) && ec)
+        throw std::runtime_error("ChunkStore: mkdir prefix failed: " + ec.message());
 
     std::string path = chunk_path(hash);
     int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);

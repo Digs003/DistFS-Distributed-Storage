@@ -1,0 +1,13 @@
+DistFS Change Log
+===================
+Any changes to files in the distfs/ directory are logged here.
+
+[2026-04-15] - Log started.
+[2026-04-15] - distfs/storage_daemon/main.cpp: Added --address flag to allow overriding the advertised address in heartbeats. This fixes Docker networking issues where nodes reported 0.0.0.0.
+[2026-04-15] - distfs/client/uploader.cpp: Updated upload logging to include secondary node info, providing more details for the test report11.
+[2026-04-15] - distfs/storage_daemon/chunk_store.hpp/cpp: Added get_stats() method using std::filesystem to calculate real disk usage and capacity.
+[2026-04-15] - distfs/storage_daemon/main.cpp: Added a background thread to periodically refresh storage stats and report them via heartbeats. This fixes the 0 GB / 0 GB issue and enables load balancing.
+[2026-04-17] - Created docker_interactive/ directory with Dockerfile and docker-compose.yml to allow running a DistFS development environment in an interactive shell with the source code mounted.
+[2026-04-17] - distfs/raft/raft_node.cpp: Fixed a bug where 1-node clusters could not become leader because the leadership transition was only triggered by peer responses.
+[2026-04-17] - distfs/metadata_server/metadata_service.cpp: Fixed hardcoded "at least 2 nodes" check in InitiateUpload to respect configured replication_factor.
+[2026-04-17] - distfs/raft/raft_node.cpp: Fixed a bug where 1-node clusters could not commit Raft entries in submit() because they were waiting for peer responses that would never arrive.
