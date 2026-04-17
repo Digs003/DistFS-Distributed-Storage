@@ -28,15 +28,15 @@ connect_metadata(const std::vector<std::string>& nodes, bool requires_leader) {
             req.set_filename(".ping_leader");
             ::distfs::InitiateUploadResponse resp;
             grpc::ClientContext ctx;
-            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(250));
+            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(2000));
             auto st = stub->InitiateUpload(&ctx, req, &resp);
 
             if (st.error_code() == grpc::StatusCode::FAILED_PRECONDITION) {
                 if (!alive_stub) alive_stub = ::distfs::MetadataService::NewStub(chan);
                 continue; // Not leader
-            } else if (st.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED || 
-                       (st.error_code() == grpc::StatusCode::UNAVAILABLE && st.error_message().find("failed to connect") != std::string::npos)) {
+            } else if (!st.ok()) {
                 last_err = st.error_message();
+                continue; // Node unavailable or timeout, try next node
             } else {
                 // We reached the leader safely
                 return stub;
@@ -45,7 +45,7 @@ connect_metadata(const std::vector<std::string>& nodes, bool requires_leader) {
             ::distfs::StatusRequest req;
             ::distfs::StatusResponse resp;
             grpc::ClientContext ctx;
-            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(250));
+            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(2000));
             auto st = stub->GetClusterStatus(&ctx, req, &resp);
             if (st.ok()) return stub;
             last_err = st.error_message();
@@ -86,6 +86,7 @@ static void cmd_list(::distfs::MetadataService::Stub& stub) {
     ::distfs::ListFilesRequest req;
     ::distfs::ListFilesResponse resp;
     grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(2000));
     auto st = stub.ListFiles(&ctx, req, &resp);
     if (!st.ok()) { std::cerr << "list failed: " << st.error_message() << "\n"; return; }
     if (resp.files_size() == 0) { std::cout << "No files stored.\n"; return; }
@@ -111,6 +112,7 @@ static void cmd_delete(::distfs::MetadataService::Stub& stub, const std::string&
     req.set_filename(name);
     ::distfs::DeleteFileResponse resp;
     grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(2000));
     auto st = stub.DeleteFile(&ctx, req, &resp);
     if (!st.ok() || !resp.success())
         std::cerr << "delete failed: " << resp.error() << "\n";
