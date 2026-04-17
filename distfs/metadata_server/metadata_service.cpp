@@ -44,7 +44,8 @@ MetadataServiceImpl::InitiateUpload(grpc::ServerContext *,
                                     ::distfs::InitiateUploadResponse *resp) {
   VLOG("metadata", "InitiateUpload: file='" + req->filename() +
        "' chunks=" + std::to_string(req->chunks_size()));
-  if (auto s = require_leader(); !s.ok()) {
+  auto s = require_leader(); 
+  if (!s.ok()) {
     VLOG("metadata", "InitiateUpload rejected: not leader");
     return s;
   }
@@ -115,7 +116,8 @@ MetadataServiceImpl::CommitUpload(grpc::ServerContext *,
                                   ::distfs::CommitUploadResponse *resp) {
   VLOG("metadata", "CommitUpload: file='" + req->filename() +
        "' token=" + req->upload_token());
-  if (auto s = require_leader(); !s.ok()) {
+  auto s = require_leader(); 
+  if (!s.ok()) {
     VLOG("metadata", "CommitUpload rejected: not leader");
     return s;
   }
@@ -225,7 +227,8 @@ MetadataServiceImpl::DeleteFile(grpc::ServerContext *,
                                 const ::distfs::DeleteFileRequest *req,
                                 ::distfs::DeleteFileResponse *resp) {
   VLOG("metadata", "DeleteFile: file='" + req->filename() + "'");
-  if (auto s = require_leader(); !s.ok()) {
+  auto s = require_leader(); 
+  if (!s.ok()) {
     VLOG("metadata", "DeleteFile rejected: not leader");
     return s;
   }
