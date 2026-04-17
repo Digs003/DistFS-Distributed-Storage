@@ -65,6 +65,13 @@ void upload_file(const std::string& local_path,
             frame.set_chunk_hash(pl.chunk_hash());
             frame.set_data(buf.data(), file.gcount());
             frame.set_offset(offset);
+
+            // Set secondary replica address for forwarding by the primary daemon
+            if (!pl.secondary_addr().empty() || !pl.secondary_node().empty()) {
+                std::string sec_addr = pl.secondary_addr().empty() ? pl.secondary_node() : pl.secondary_addr();
+                frame.set_secondary_addr(sec_addr);
+            }
+            
             writer->Write(frame);
             offset += file.gcount();
             remaining -= file.gcount();

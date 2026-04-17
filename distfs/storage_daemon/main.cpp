@@ -47,32 +47,37 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::string sd_addr = "0.0.0.0:" + port;
-    // check if config has the host for us
-    for(auto& d : cfg.storage.daemons) {
-      if (d.id == node_id) {
-          sd_addr = d.address;
-          break;
-      }
+    // We MUST bind to 0.0.0.0 so we can receive requests from any IP.
+    std::string listen_addr = "0.0.0.0:" + port;
+
+    // We MUST report our _routable_ IP to the metadata server, otherwise 
+    // clients and other daemons will try to connect to 0.0.0.0
+    // Try to find our routable IP from the config file's storage.daemons list.
+    std::string report_addr = "127.0.0.1:" + port; // fallback config
+    for (auto& d : cfg.storage.daemons) {
+        if (d.id == node_id) {
+            report_addr = d.address;
+            break;
+        }
     }
 
     // ---- Start heartbeat client ----
-    distfs::HeartbeatClient hb(node_id, sd_addr, cfg.client.metadata_nodes,
+    distfs::HeartbeatClient hb(node_id, report_addr, cfg.client.metadata_nodes,
                                 cfg.storage.dead_threshold_sec / 3);
     hb.start();
 
     // ---- Start gRPC server ----
     distfs::StorageServiceImpl service(data_dir, node_id);
     grpc::ServerBuilder builder;
-    builder.AddListeningPort(sd_addr, grpc::InsecureServerCredentials());
+    builder.AddListeningPort(listen_addr, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
     auto server = builder.BuildAndStart();
     if (!server) {
-        std::cerr << "[ERROR] Failed to start gRPC server on " << sd_addr << "\n";
+        std::cerr << "[ERROR] Failed to start gRPC server on " << listen_addr << "\n";
         return 1;
     }
-    std::cout << "[storage_daemon] " << node_id << " listening on " << sd_addr
-              << " | data_dir=" << data_dir << "\n";
+    std::cout << "[storage_daemon] " << node_id << " listening on " << listen_addr
+              << " (reporting as " << report_addr << ") | data_dir=" << data_dir << "\n";
 
     // ---- Graceful shutdown ----
     std::signal(SIGINT,  signal_handler);

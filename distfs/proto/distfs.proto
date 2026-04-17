@@ -55,6 +55,7 @@ message ChunkData {
   string chunk_hash = 1;
   bytes  data       = 2;
   int64  offset     = 3;
+  string secondary_addr = 4;
 }
 
 message ChunkRequest {

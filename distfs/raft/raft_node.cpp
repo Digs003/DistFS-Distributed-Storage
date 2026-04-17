@@ -171,7 +171,8 @@ void RaftNode::reset_election_timer() {
 // ============================================================
 // RequestVote RPC handler (follower / candidate side)
 // ============================================================
-
+// @return: {gRPC response for a RequestVote RPC. 
+//            term and vote_granted}
 ::distfs::RequestVoteResponse RaftNode::handle_request_vote(
     const ::distfs::RequestVoteRequest& req)
 {
@@ -185,6 +186,7 @@ void RaftNode::reset_election_timer() {
     }
 
     // Step down on higher term
+    /* go to Follower state */
     if (req.term() > current_term_.load()) {
         current_term_.store(req.term());
         voted_for_.clear();
@@ -196,7 +198,9 @@ void RaftNode::reset_election_timer() {
 
     bool can_vote = (voted_for_.empty() || voted_for_ == req.candidate_id());
     bool log_up_to_date = log_ok(req.last_log_index(), req.last_log_term());
-
+    // 2 conditions checked 
+    // - one is obv
+    // - out of all nodes, only some selected can become leader
     if (can_vote && log_up_to_date) {
         voted_for_ = req.candidate_id();
         persist_hard_state();
@@ -214,8 +218,7 @@ void RaftNode::reset_election_timer() {
 // AppendEntries RPC handler (follower side)
 // ============================================================
 
-::distfs::AppendEntriesResponse RaftNode::handle_append_entries(
-    const ::distfs::AppendEntriesRequest& req)
+::distfs::AppendEntriesResponse RaftNode::handle_append_entries(const ::distfs::AppendEntriesRequest& req)
 {
     std::lock_guard<std::mutex> lk(mu_);
     ::distfs::AppendEntriesResponse resp;

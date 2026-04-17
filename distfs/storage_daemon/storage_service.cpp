@@ -23,9 +23,13 @@ grpc::Status StorageServiceImpl::UploadChunk(
     ::distfs::ChunkData frame;
     std::vector<uint8_t> buf;
     std::string chunk_hash;
+    std::string secondary_addr;
 
     while (reader->Read(&frame)) {
         if (chunk_hash.empty()) chunk_hash = frame.chunk_hash();
+        if (secondary_addr.empty() && !frame.secondary_addr().empty()) {
+            secondary_addr = frame.secondary_addr();
+        }
         const std::string& d = frame.data();
         buf.insert(buf.end(), d.begin(), d.end());
     }
@@ -41,6 +45,17 @@ grpc::Status StorageServiceImpl::UploadChunk(
     try {
         store_.write_chunk(chunk_hash, buf);
         VLOG("storage", "UploadChunk OK: hash=" + chunk_hash.substr(0, 8) + "...");
+        
+        // Forward to secondary replica if specified
+        if (!secondary_addr.empty()) {
+            VLOG("storage", "Forwarding chunk to secondary: " + secondary_addr);
+            auto status = forward_to(secondary_addr, chunk_hash, buf);
+            if (!status.ok()) {
+                VLOG("storage", "Forwarding to secondary failed: " + status.error_message());
+                // We still report success for the primary write, but log the forwarding error
+            }
+        }
+        
         reply->set_success(true);
     } catch (const std::exception& e) {
         VLOG("storage", "UploadChunk FAILED: " + std::string(e.what()));
