@@ -80,6 +80,10 @@ void ChunkStore::delete_chunk(const std::string& hash) {
     std::string path = chunk_path(hash);
     if (::unlink(path.c_str()) != 0 && errno != ENOENT)
         throw std::runtime_error("ChunkStore: delete failed: " + std::string(strerror(errno)));
+
+    // Try to remove the prefix directory. rmdir will only succeed if it's empty.
+    std::string prefix_dir = data_dir_ + "/" + hash.substr(0, 2);
+    ::rmdir(prefix_dir.c_str()); // Ignore errors (e.g., directory not empty)
 }
 
 } // namespace distfs

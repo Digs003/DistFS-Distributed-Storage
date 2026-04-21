@@ -117,7 +117,7 @@ static void cmd_delete(::distfs::MetadataService::Stub& stub, const std::string&
     if (!st.ok() || !resp.success())
         std::cerr << "delete failed: " << resp.error() << "\n";
     else
-        std::cout << "Deleted: " << name << " (chunks orphaned, GC pending)\n";
+        std::cout << "Deleted: " << name << " (chunks orphaned, GC will clean up periodically)\n";
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -134,7 +134,7 @@ int main(int argc, char* argv[]) {
 
     std::string subcmd = argv[1];
     std::string file_path, remote_name, out_path;
-    std::string config_path = "cluster.conf";
+    std::string config_path = "remote_cluster.conf";
 
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
