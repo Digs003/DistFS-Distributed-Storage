@@ -72,8 +72,8 @@ static void cmd_status(::distfs::MetadataService::Stub& stub) {
     for (auto& n : resp.storage_nodes()) {
         std::cout << "  " << n.address()
                   << "  [" << (n.is_alive() ? "ALIVE" : "DEAD") << "]"
-                  << "  " << n.used_bytes()/1073741824.0 << " GB / "
-                  << n.total_bytes()/1073741824.0 << " GB\n";
+                  << "  " << (int)(n.used_bytes()/1048576.0) << " MB / "
+                  << (int)(n.total_bytes()/1048576.0) << " MB\n";
     }
     std::cout << "Replication Health:\n";
     std::cout << "  Total chunks: " << resp.total_chunks()
@@ -93,16 +93,14 @@ static void cmd_list(::distfs::MetadataService::Stub& stub) {
     std::cout << std::left
               << std::setw(30) << "NAME"
               << std::setw(10) << "CHUNKS"
-              << std::setw(14) << "SIZE"
-              << "REVISION\n";
-    std::cout << std::string(60, '-') << "\n";
+              << "SIZE\n";
+    std::cout << std::string(54, '-') << "\n";
     for (auto& f : resp.files()) {
         double mb = f.total_bytes() / 1048576.0;
         std::cout << std::left
                   << std::setw(30) << f.filename()
                   << std::setw(10) << f.chunk_count()
-                  << std::setw(14) << (std::to_string((int)mb) + " MB")
-                  << f.revision_id() << "\n";
+                  << (std::to_string((int)mb) + " MB") << "\n";
     }
 }
 

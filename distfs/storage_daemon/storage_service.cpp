@@ -175,6 +175,11 @@ grpc::Status StorageServiceImpl::HasChunk(
     return grpc::Status::OK;
 }
 
+void StorageServiceImpl::get_stats(int64_t& used_bytes, int64_t& total_bytes, int64_t& chunk_count) const {
+    store_.get_stats(used_bytes, total_bytes, chunk_count);
+}
+
+
 // --------------------------------------------------------
 // Internal: stream chunk bytes to a remote ForwardChunk RPC
 // --------------------------------------------------------
