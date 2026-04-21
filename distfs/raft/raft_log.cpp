@@ -38,8 +38,8 @@ RaftLog::RaftLog(const std::string& wal_path) : wal_path_(wal_path) {
         try {
             entries_.push_back(deserialize(data));
         } catch (...) {
-            std::__throw_runtime_error("RaftLog: corrupt entry");
-            // Skip corrupt entry at tail
+            // Fail fast on replay corruption.
+            throw std::runtime_error("RaftLog: corrupt entry");
         }
     });
 }
