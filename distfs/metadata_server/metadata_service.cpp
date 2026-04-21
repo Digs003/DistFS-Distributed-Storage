@@ -232,6 +232,51 @@ MetadataServiceImpl::DeleteFile(grpc::ServerContext *,
     VLOG("metadata", "DeleteFile rejected: not leader");
     return s;
   }
+  /*
+    Discuss the design of DeleteFile:
+    - Currently client makes request to MetadataService 
+    - MetadataService synchronously call DeleteChunk on all associated storage nodes
+    - If any DeleteChunk call fails, MetadataService should retry or handle the error
+    - Then MetadataService commits the deletion to Raft, which will remove the file
+  */
+  FileRecord rec;
+  try {
+    rec = store_.get_file(req->filename());
+  } catch (...) {
+    VLOG("metadata", "DeleteFile failed: File not found '" + req->filename() + "'");
+    resp->set_success(false);
+    resp->set_error("File not found");
+    return grpc::Status::OK;
+  }
+  
+  // Delete chunks from associated storage nodes synchronously FIRST
+  for (const auto& hash : rec.chunk_hashes) {
+    auto nodes = store_.get_chunk_nodes(hash);
+    for (const auto& nid : nodes) {
+      std::string addr = store_.node_address(nid);
+      if (addr.empty()) continue;
+      
+      auto chan = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
+      auto stub = ::distfs::StorageService::NewStub(chan);
+      ::distfs::ChunkRequest creq;
+      creq.set_chunk_hash(hash);
+      ::distfs::ChunkAck cack;
+      grpc::ClientContext ctx;
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+      
+      auto st = stub->DeleteChunk(&ctx, creq, &cack);
+      if (!st.ok() || !cack.success()) {
+          VLOG("metadata", "Warning: Failed to delete chunk " + hash.substr(0,8) + " from " + addr + 
+                           " (" + (st.ok() ? cack.error_message() : st.error_message()) + ")");
+          // Note: We log the error but intentionally continue to the next chunk/node.
+          // If we aborted here, the file would become permanently un-deletable if a single storage node goes offline.
+      } else {
+          VLOG("metadata", "Successfully deleted chunk " + hash.substr(0,8) + " from " + addr);
+      }
+    }
+  }
+
+  // After attempting to physically delete the chunks, commit the deletion to Raft
   auto cmd = MetadataStore::cmd_delete_file(req->filename());
   if (!raft_.submit(cmd)) {
     VLOG("metadata", "DeleteFile failed: Raft submit rejected");
@@ -239,6 +284,7 @@ MetadataServiceImpl::DeleteFile(grpc::ServerContext *,
     resp->set_error("Raft commit failed");
     return grpc::Status::OK;
   }
+
   VLOG("metadata", "DeleteFile OK: file='" + req->filename() + "'");
   resp->set_success(true);
   return grpc::Status::OK;

@@ -78,8 +78,10 @@ bool ChunkStore::has_chunk(const std::string& hash) const {
 
 void ChunkStore::delete_chunk(const std::string& hash) {
     std::string path = chunk_path(hash);
-    if (::unlink(path.c_str()) != 0 && errno != ENOENT)
+    if (::unlink(path.c_str()) != 0 && errno != ENOENT){
         throw std::runtime_error("ChunkStore: delete failed: " + std::string(strerror(errno)));
-}
-
+    }
+    std::string prefix_dir = data_dir_ + "/" + hash.substr(0, 2);
+    ::rmdir(prefix_dir.c_str()); // ignore error if not empty
 } // namespace distfs
+}

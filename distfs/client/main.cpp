@@ -57,7 +57,7 @@ connect_metadata(const std::vector<std::string>& nodes, bool requires_leader) {
     throw std::runtime_error("Failed to connect to cluster. Last err: " + last_err);
 }
 
-// ── status ──────────────────────────────────────────────────────────────────
+// status  
 static void cmd_status(::distfs::MetadataService::Stub& stub) {
     ::distfs::StatusRequest req;
     ::distfs::StatusResponse resp;
@@ -81,7 +81,7 @@ static void cmd_status(::distfs::MetadataService::Stub& stub) {
               << "   Orphaned: " << resp.orphaned_chunks() << "\n\n";
 }
 
-// ── list ─────────────────────────────────────────────────────────────────────
+// list  ───
 static void cmd_list(::distfs::MetadataService::Stub& stub) {
     ::distfs::ListFilesRequest req;
     ::distfs::ListFilesResponse resp;
@@ -106,7 +106,7 @@ static void cmd_list(::distfs::MetadataService::Stub& stub) {
     }
 }
 
-// ── delete ───────────────────────────────────────────────────────────────────
+// delete  ─
 static void cmd_delete(::distfs::MetadataService::Stub& stub, const std::string& name) {
     ::distfs::DeleteFileRequest req;
     req.set_filename(name);
@@ -120,7 +120,7 @@ static void cmd_delete(::distfs::MetadataService::Stub& stub, const std::string&
         std::cout << "Deleted: " << name << " (chunks orphaned, GC pending)\n";
 }
 
-// ── main ─────────────────────────────────────────────────────────────────────
+// main  ───
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: distfs-cli <upload|download|list|delete|status> [options]\n"
