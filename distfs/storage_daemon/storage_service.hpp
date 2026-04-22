@@ -41,6 +41,9 @@ public:
                           const ::distfs::ChunkRequest* req,
                           ::distfs::ChunkAck* reply) override;
 
+    // Local helper to get disk stats
+    void get_stats(int64_t& used_bytes, int64_t& total_bytes, int64_t& chunk_count) const;
+
 private:
     ChunkStore  store_;
     std::string node_id_;

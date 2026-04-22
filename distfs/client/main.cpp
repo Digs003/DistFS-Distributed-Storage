@@ -72,8 +72,8 @@ static void cmd_status(::distfs::MetadataService::Stub& stub) {
     for (auto& n : resp.storage_nodes()) {
         std::cout << "  " << n.address()
                   << "  [" << (n.is_alive() ? "ALIVE" : "DEAD") << "]"
-                  << "  " << n.used_bytes()/1073741824.0 << " GB / "
-                  << n.total_bytes()/1073741824.0 << " GB\n";
+                  << "  " << (int)(n.used_bytes()/1048576.0) << " MB / "
+                  << (int)(n.total_bytes()/1048576.0) << " MB\n";
     }
     std::cout << "Replication Health:\n";
     std::cout << "  Total chunks: " << resp.total_chunks()
@@ -93,16 +93,14 @@ static void cmd_list(::distfs::MetadataService::Stub& stub) {
     std::cout << std::left
               << std::setw(30) << "NAME"
               << std::setw(10) << "CHUNKS"
-              << std::setw(14) << "SIZE"
-              << "REVISION\n";
-    std::cout << std::string(60, '-') << "\n";
+              << "SIZE\n";
+    std::cout << std::string(54, '-') << "\n";
     for (auto& f : resp.files()) {
         double mb = f.total_bytes() / 1048576.0;
         std::cout << std::left
                   << std::setw(30) << f.filename()
                   << std::setw(10) << f.chunk_count()
-                  << std::setw(14) << (std::to_string((int)mb) + " MB")
-                  << f.revision_id() << "\n";
+                  << (std::to_string((int)mb) + " MB") << "\n";
     }
 }
 
@@ -117,7 +115,7 @@ static void cmd_delete(::distfs::MetadataService::Stub& stub, const std::string&
     if (!st.ok() || !resp.success())
         std::cerr << "delete failed: " << resp.error() << "\n";
     else
-        std::cout << "Deleted: " << name << " (chunks orphaned, GC pending)\n";
+        std::cout << "Deleted: " << name << " (chunks orphaned, GC will clean up periodically)\n";
 }
 
 // main  ───
@@ -134,7 +132,7 @@ int main(int argc, char* argv[]) {
 
     std::string subcmd = argv[1];
     std::string file_path, remote_name, out_path;
-    std::string config_path = "cluster.conf";
+    std::string config_path = "remote_cluster.conf";
 
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];

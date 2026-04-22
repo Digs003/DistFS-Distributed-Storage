@@ -21,11 +21,15 @@ void MetadataServiceImpl::start_monitors() {
   running_ = true;
   heartbeat_monitor_thread_ =
       std::thread(&MetadataServiceImpl::heartbeat_monitor_loop, this);
+  gc_monitor_thread_ =
+      std::thread(&MetadataServiceImpl::gc_monitor_loop, this);
 }
 void MetadataServiceImpl::stop_monitors() {
   running_ = false;
   if (heartbeat_monitor_thread_.joinable())
     heartbeat_monitor_thread_.join();
+  if (gc_monitor_thread_.joinable())
+    gc_monitor_thread_.join();
 }
 
 grpc::Status MetadataServiceImpl::require_leader() const {
@@ -459,4 +463,58 @@ void MetadataServiceImpl::trigger_re_replication(const NodeID &dead_node) {
             << "\n";
 }
 
+void MetadataServiceImpl::gc_monitor_loop() {
+  while (running_) {
+    // GC every 30 seconds
+    for (int i = 0; i < 30 && running_; ++i) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    if (!running_) break;
+    if (raft_.is_leader()) {
+      cleanup_orphans();
+    }
+  }
+}
+
+void MetadataServiceImpl::cleanup_orphans() {
+  auto orphans = store_.get_orphans();
+  if (orphans.empty()) return;
+
+  VLOG("metadata", "GC: found " + std::to_string(orphans.size()) + " orphaned chunks");
+
+  for (auto const& [hash, nodes] : orphans) {
+    if (!running_ || !raft_.is_leader()) break;
+
+    bool all_deleted = true;
+    for (const auto& node_id : nodes) {
+      std::string addr = store_.node_address(node_id);
+      if (addr.empty()) continue;
+
+      auto chan = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
+      auto stub = ::distfs::StorageService::NewStub(chan);
+      
+      ::distfs::ChunkRequest req;
+      req.set_chunk_hash(hash);
+      ::distfs::ChunkAck ack;
+      grpc::ClientContext ctx;
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+      
+      auto status = stub->DeleteChunk(&ctx, req, &ack);
+      if (!status.ok() || !ack.success()) {
+        VLOG("metadata", "GC: failed to delete " + hash.substr(0,8) + " on " + node_id);
+        all_deleted = false;
+      }
+    }
+
+    // Even if some deletions failed, we remove it from the metadata state
+    // so we don't keep retrying forever if a node is permanently gone.
+    // If a node comes back, it might still have the chunk, but it won't be in our map.
+    auto cmd = MetadataStore::cmd_remove_chunk(hash);
+    if (raft_.submit(cmd)) {
+      VLOG("metadata", "GC: removed " + hash.substr(0,8) + " from metadata state");
+    }
+  }
+}
+
 } // namespace distfs
+

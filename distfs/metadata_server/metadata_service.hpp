@@ -51,12 +51,15 @@ private:
 
   std::atomic<bool> running_{false};
   std::thread heartbeat_monitor_thread_;
+  std::thread gc_monitor_thread_;
 
   std::map<std::string, std::vector<LocalNodePlacement>> pending_placements_;
   std::mutex pending_mu_;
 
   void heartbeat_monitor_loop();
+  void gc_monitor_loop();
   void trigger_re_replication(const NodeID &dead_node);
+  void cleanup_orphans();
 
   // Helper: return FAILED_PRECONDITION with leader hint if not leader
   grpc::Status require_leader() const;

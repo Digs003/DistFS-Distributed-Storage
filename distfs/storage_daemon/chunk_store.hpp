@@ -24,6 +24,9 @@ public:
     // Unlink the chunk file. No-op if not found.
     void delete_chunk(const std::string& hash);
 
+    // Get disk usage stats
+    void get_stats(int64_t& used_bytes, int64_t& total_bytes, int64_t& chunk_count) const;
+
     // Directory where chunks are stored.
     const std::string& data_dir() const { return data_dir_; }
 

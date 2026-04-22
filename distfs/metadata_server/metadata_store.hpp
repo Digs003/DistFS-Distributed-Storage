@@ -51,6 +51,7 @@ public:
     int64_t total_chunks()       const;
     int64_t under_replicated()   const;
     int64_t orphaned_chunks()    const;
+    std::map<std::string, std::vector<NodeID>> get_orphans() const;
 
     // Commands (serialize to bytes for Raft)
     static std::vector<uint8_t> cmd_commit_upload(
@@ -63,6 +64,8 @@ public:
     static std::vector<uint8_t> cmd_update_chunk_map(
         const std::string& chunk_hash, const std::vector<NodeID>& nodes);
 
+    static std::vector<uint8_t> cmd_remove_chunk(const std::string& chunk_hash);
+
 private:
     mutable std::mutex                               mu_;
     std::unordered_map<std::string, FileRecord>      file_map_;
@@ -73,6 +76,7 @@ private:
     void apply_commit_upload(const std::vector<uint8_t>& payload);
     void apply_delete_file(const std::vector<uint8_t>& payload);
     void apply_update_chunk_map(const std::vector<uint8_t>& payload);
+    void apply_remove_chunk(const std::vector<uint8_t>& payload);
 };
 
 } // namespace distfs

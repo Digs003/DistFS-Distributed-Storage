@@ -67,6 +67,13 @@ std::vector<uint8_t> MetadataStore::cmd_update_chunk_map(
     return buf;
 }
 
+std::vector<uint8_t> MetadataStore::cmd_remove_chunk(const std::string& chunk_hash) {
+    std::vector<uint8_t> buf;
+    buf.push_back(4);
+    write_str(buf, chunk_hash);
+    return buf;
+}
+
 // ============================================================
 // Apply a committed Raft command
 // ============================================================
@@ -76,6 +83,7 @@ void MetadataStore::apply_command(const std::vector<uint8_t>& command) {
     if      (type == 1) apply_commit_upload({command.begin()+1, command.end()});
     else if (type == 2) apply_delete_file  ({command.begin()+1, command.end()});
     else if (type == 3) apply_update_chunk_map({command.begin()+1, command.end()});
+    else if (type == 4) apply_remove_chunk ({command.begin()+1, command.end()});
 }
 
 void MetadataStore::apply_commit_upload(const std::vector<uint8_t>& p) {
@@ -125,6 +133,14 @@ void MetadataStore::apply_update_chunk_map(const std::vector<uint8_t>& p) {
     std::lock_guard<std::mutex> lk(mu_);
     chunk_map_[ch] = nodes;
 }
+
+void MetadataStore::apply_remove_chunk(const std::vector<uint8_t>& p) {
+    const uint8_t* data = p.data(); size_t off = 0;
+    std::string ch = read_str(data, off);
+    std::lock_guard<std::mutex> lk(mu_);
+    chunk_map_.erase(ch);
+}
+
 
 // ============================================================
 // Read-path
@@ -238,5 +254,19 @@ int64_t MetadataStore::orphaned_chunks() const {
         if (!referenced.count(h)) ++count;
     return count;
 }
+
+std::map<std::string, std::vector<NodeID>> MetadataStore::get_orphans() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    std::unordered_map<std::string, bool> referenced;
+    for (auto& [name, rec] : file_map_)
+        for (auto& h : rec.chunk_hashes)
+            referenced[h] = true;
+
+    std::map<std::string, std::vector<NodeID>> orphans;
+    for (auto& [h, nodes] : chunk_map_)
+        if (!referenced.count(h)) orphans[h] = nodes;
+    return orphans;
+}
+
 
 } // namespace distfs

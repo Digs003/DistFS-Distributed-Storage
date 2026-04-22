@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <cstring>
 #include <cerrno>
+#include <sys/statvfs.h>
+#include <dirent.h>
 #include <fstream>
 
 namespace distfs {
@@ -80,8 +82,55 @@ void ChunkStore::delete_chunk(const std::string& hash) {
     std::string path = chunk_path(hash);
     if (::unlink(path.c_str()) != 0 && errno != ENOENT){
         throw std::runtime_error("ChunkStore: delete failed: " + std::string(strerror(errno)));
-    }
+
+    // Try to remove the prefix directory. rmdir will only succeed if it's empty.
     std::string prefix_dir = data_dir_ + "/" + hash.substr(0, 2);
-    ::rmdir(prefix_dir.c_str()); // ignore error if not empty
+    ::rmdir(prefix_dir.c_str()); // Ignore errors (e.g., directory not empty)
+}
+
+void ChunkStore::get_stats(int64_t& used_bytes, int64_t& total_bytes, int64_t& chunk_count) const {
+    used_bytes = 0;
+    total_bytes = 0;
+    chunk_count = 0;
+
+    // Get total disk capacity
+    struct statvfs vfs;
+    if (statvfs(data_dir_.c_str(), &vfs) == 0) {
+        total_bytes = (int64_t)vfs.f_blocks * vfs.f_frsize;
+    }
+
+    // Scan data_dir for chunks
+    DIR* dir = opendir(data_dir_.c_str());
+    if (!dir) return;
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (entry->d_type == DT_DIR) {
+            std::string dname = entry->d_name;
+            if (dname == "." || dname == "..") continue;
+
+            // Prefix directory (e.g. "47")
+            std::string prefix_path = data_dir_ + "/" + dname;
+            DIR* subdir = opendir(prefix_path.c_str());
+            if (!subdir) continue;
+
+            struct dirent* subentry;
+            while ((subentry = readdir(subdir)) != nullptr) {
+                if (subentry->d_type == DT_REG) {
+                    std::string fpath = prefix_path + "/" + subentry->d_name;
+                    struct stat st;
+                    if (stat(fpath.c_str(), &st) == 0) {
+                        used_bytes += st.st_size;
+                        chunk_count++;
+                    }
+                }
+            }
+            closedir(subdir);
+        }
+    }
+    closedir(dir);
+}
+
+
 } // namespace distfs
 }
