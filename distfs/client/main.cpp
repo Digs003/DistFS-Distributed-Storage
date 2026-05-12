@@ -6,13 +6,13 @@
 #include <string>
 #include <vector>
 #include <iomanip>
+#include <chrono>
 
 namespace distfs {
 void upload_file(const std::string&, const std::string&, ::distfs::MetadataService::Stub&, int64_t);
 void download_file(const std::string&, const std::string&, ::distfs::MetadataService::Stub&);
 }
 
-#include <chrono>
 
 static std::unique_ptr<::distfs::MetadataService::Stub>
 connect_metadata(const std::vector<std::string>& nodes, bool requires_leader) {
@@ -81,7 +81,7 @@ static void cmd_status(::distfs::MetadataService::Stub& stub) {
               << "   Orphaned: " << resp.orphaned_chunks() << "\n\n";
 }
 
-// list  ───
+// list
 static void cmd_list(::distfs::MetadataService::Stub& stub) {
     ::distfs::ListFilesRequest req;
     ::distfs::ListFilesResponse resp;
@@ -104,7 +104,7 @@ static void cmd_list(::distfs::MetadataService::Stub& stub) {
     }
 }
 
-// delete  ─
+// delete
 static void cmd_delete(::distfs::MetadataService::Stub& stub, const std::string& name) {
     ::distfs::DeleteFileRequest req;
     req.set_filename(name);
@@ -118,7 +118,7 @@ static void cmd_delete(::distfs::MetadataService::Stub& stub, const std::string&
         std::cout << "Deleted: " << name << " (chunks orphaned, GC will clean up periodically)\n";
 }
 
-// main  ───
+// main
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: distfs-cli <upload|download|list|delete|status> [options]\n"
@@ -132,7 +132,7 @@ int main(int argc, char* argv[]) {
 
     std::string subcmd = argv[1];
     std::string file_path, remote_name, out_path;
-    std::string config_path = "remote_cluster.conf";
+    std::string config_path = "cluster.conf";
 
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
