@@ -82,7 +82,7 @@ int main(int argc, char* argv[]) {
     // ---- Graceful shutdown ----
     std::signal(SIGINT,  signal_handler);
     std::signal(SIGTERM, signal_handler);
-    while (!g_shutdown) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    while (!g_shutdown) std::this_thread::sleep_for(std::chrono::milliseconds(200));    
 
     std::cout << "[storage_daemon] Shutting down...\n";
     hb.stop();

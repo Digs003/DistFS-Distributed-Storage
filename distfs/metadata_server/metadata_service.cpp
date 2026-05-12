@@ -243,6 +243,7 @@ MetadataServiceImpl::DeleteFile(grpc::ServerContext *,
     resp->set_error("Raft commit failed");
     return grpc::Status::OK;
   }
+
   VLOG("metadata", "DeleteFile OK: file='" + req->filename() + "'");
   resp->set_success(true);
   return grpc::Status::OK;

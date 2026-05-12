@@ -40,7 +40,6 @@ public:
     grpc::Status HasChunk(grpc::ServerContext* ctx,
                           const ::distfs::ChunkRequest* req,
                           ::distfs::ChunkAck* reply) override;
-
 private:
     ChunkStore  store_;
     std::string node_id_;
